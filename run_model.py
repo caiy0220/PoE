@@ -23,12 +23,12 @@ Integrated with SOC explanation regularization
 from __future__ import absolute_import, division, print_function
 
 import argparse
-import csv
 import logging
 import os
 import random
 import sys
 import json
+import pickle
 
 import numpy as np
 import torch
@@ -37,7 +37,7 @@ from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
 from torch.utils.data.distributed import DistributedSampler
 from torch import nn
 from torch.nn import functional as F
-from tqdm import tqdm, trange
+from tqdm import tqdm
 
 from torch.nn import CrossEntropyLoss, MSELoss
 from scipy.stats import pearsonr, spearmanr
@@ -93,6 +93,28 @@ def compute_metrics(task_name, preds, labels, pred_probs):
     return acc_and_f1(preds, labels, pred_probs)
 
 
+def find_no_matching(logits, labels):
+    pred = logits.detach().cpu().max(1).indices
+    matched = pred == labels
+    return np.where(matched == 0)[0]
+
+
+def find_incorrect_pred(model, input_batch, device='cuda'):
+    # make sure you have set train to False cause this funciton won't do that
+    input_ids = input_batch[0].to(device)
+    segment_ids = None
+    input_mask = input_batch[1].to(device)
+    label_ids = input_batch[3].to(device)
+
+    model.train(False)
+    with torch.no_grad():
+        logits = model(input_ids, segment_ids, input_mask, labels=None)
+        pred = logits.max(1).indices
+    matched = pred == label_ids
+    matched = matched.to('cpu')
+    return np.where(matched == 0)[0]
+
+
 def main():
     parser = argparse.ArgumentParser()
 
@@ -145,7 +167,12 @@ def main():
     # whether use explanation regularization
     parser.add_argument("--reg_explanations", action='store_true')
     parser.add_argument("--targeted_suppress", action='store_true')
-    parser.add_argument("--reg_weighted", action='store_true')
+    parser.add_argument("--reg_balanced", action='store_true')
+    parser.add_argument("--suppress_weighted", action='store_true')
+    parser.add_argument("--suppress_fading", type=float, default=0.7)
+    parser.add_argument("--suppress_increasing", type=float, default=1.2)
+    parser.add_argument("--suppress_lower_thresh", type=float, default=0.5)
+    parser.add_argument("--suppress_higher_thresh", type=float, default=2.)
     parser.add_argument("--reg_strength", type=float)
     parser.add_argument("--reg_mse", action='store_true')
 
@@ -180,6 +207,9 @@ def main():
 
     # early stopping with decreasing learning rate. 0: direct exit when validation F1 decreases
     parser.add_argument("--early_stop", default=5, type=int)
+    parser.add_argument("--max_iter", default=-1, type=int)
+
+    parser.add_argument("--stats_file", default='log.pkl')
 
     # other external arguments originally here in pytorch_transformers
 
@@ -199,6 +229,8 @@ def main():
     parser.add_argument("--do_eval",
                         action='store_true',
                         help="Whether to run eval on the dev set.")
+    parser.add_argument("--do_update_test",
+                        action='store_true')
     parser.add_argument("--do_lower_case",
                         action='store_true',
                         help="Set this flag if you are using an uncased model.")
@@ -301,8 +333,8 @@ def main():
     if n_gpu > 0:
         torch.cuda.manual_seed_all(args.seed)
 
-    if not args.do_train and not args.do_eval:
-        raise ValueError("At least one of `do_train` or `do_eval` must be True.")
+    if not args.do_train and not args.do_eval and not args.do_update_test:
+        raise ValueError("At least one of `do_train` or `do_eval` or `do_update_test` must be True.")
 
     # if os.path.exists(args.output_dir) and os.listdir(args.output_dir) and args.do_train:
     #    raise ValueError("Output directory ({}) already exists and is not empty.".format(args.output_dir))
@@ -310,9 +342,10 @@ def main():
         os.makedirs(args.output_dir)
 
     # save configs
-    f = open(os.path.join(args.output_dir, 'args.json'), 'w')
-    json.dump(args.__dict__, f, indent=4)
-    f.close()
+    if args.do_train:
+        f = open(os.path.join(args.output_dir, 'args.json'), 'w')
+        json.dump(args.__dict__, f, indent=4)
+        f.close()
 
     task_name = args.task_name.lower()
 
@@ -320,7 +353,7 @@ def main():
         raise ValueError("Task not found: %s" % task_name)
 
     tokenizer = BertTokenizer.from_pretrained(args.bert_model, do_lower_case=args.do_lower_case)
-    processor = processors[task_name](configs, tokenizer=tokenizer)
+    processor = processors[task_name](args, tokenizer=tokenizer)
     output_mode = output_modes[task_name]
 
     label_list = processor.get_labels()
@@ -400,33 +433,36 @@ def main():
     epoch = -1
     val_best_f1 = -1
     val_best_loss = 1e10
-    early_stop_countdown = args.early_stop
+    if args.max_iter < 0:
+        early_stop_countdown = args.early_stop
+    else:
+        early_stop_countdown = int(args.max_iter / 200) + 1
 
     logger.info('***** Explanation config *****')
     logger.info('\tReg explanation:  \t{}'.format(args.reg_explanations))
-    logger.info('\tReg weighted :    \t{}'.format(args.reg_weighted))
+    logger.info('\tReg balanced:     \t{}'.format(args.reg_balanced))
     logger.info('\tTargeted suppress:\t{}'.format(args.targeted_suppress))
-    if args.reg_explanations:
-        """
-        Language model is used in the explanation method for generating the neighboring instances 
-        """
-        train_lm_dataloder = processor.get_dataloader('train', configs.train_batch_size)
-        dev_lm_dataloader = processor.get_dataloader('dev', configs.train_batch_size)
-        explainer = SamplingAndOcclusionExplain(model, args, tokenizer, device=device, vocab=tokenizer.vocab,
-                                                train_dataloader=train_lm_dataloder,
-                                                dev_dataloader=dev_lm_dataloader,
-                                                lm_dir=args.lm_dir,
-                                                output_path=os.path.join(configs.output_dir,
-                                                                         configs.output_filename),
+    # if args.reg_explanations:
+    """
+    Language model is used in the explanation method for generating the neighboring instances 
+    """
+    train_lm_dataloder = processor.get_dataloader('train', args.train_batch_size)
+    dev_lm_dataloader = processor.get_dataloader('dev', args.train_batch_size)
+    explainer = SamplingAndOcclusionExplain(model, args, tokenizer, device=device, vocab=tokenizer.vocab,
+                                            train_dataloader=train_lm_dataloder,
+                                            dev_dataloader=dev_lm_dataloader,
+                                            lm_dir=args.lm_dir,
+                                            output_path=os.path.join(args.output_dir,
+                                                                     args.output_filename),
 
-                                                )
-    else:
-        explainer = None
+                                            )
+    # else:
+    #     explainer = None
 
     if args.do_train:
         epoch = 0
         train_features = convert_examples_to_features(
-            train_examples, label_list, args.max_seq_length, tokenizer, output_mode, configs, verbose=0)
+            train_examples, label_list, args.max_seq_length, tokenizer, output_mode, args, verbose=0)
         logger.info("***** Running training *****")
         logger.info("  Num examples = %d", len(train_examples))
         logger.info("  Batch size = %d", args.train_batch_size)
@@ -450,7 +486,9 @@ def main():
         class_weight = torch.FloatTensor([args.negative_weight, 1]).to(device)
 
         model.train()
-        # for _ in trange(int(args.num_train_epochs), desc="Epoch"):
+        losses = []
+        reg_losses = []
+        suppress_records = []
         for epoch_idx in range(int(args.num_train_epochs)):
             logger.info("***** Epoch {} *****".format(epoch_idx))
             tr_loss = 0
@@ -483,10 +521,16 @@ def main():
                 # NOTE: backward performed inside this function to prevent OOM
 
                 if args.reg_explanations:
-                    reg_loss, reg_cnt = explainer.compute_explanation_loss(input_ids, input_mask, segment_ids, label_ids,
-                                                                  do_backprop=True)
-                    tr_reg_loss += reg_loss # float
-                    tr_reg_cnt += reg_cnt
+                    if args.neutral_words_file != '':
+                        reg_loss, reg_cnt = explainer.compute_explanation_loss(input_ids, input_mask, segment_ids, label_ids,
+                                                                               do_backprop=True)
+                    else:
+                        reg_loss, reg_cnt = explainer.suppres_explanation_loss(input_ids, input_mask, segment_ids, label_ids,
+                                                                               do_backprop=True)
+                        tr_reg_loss += reg_loss  # float
+                        tr_reg_cnt += reg_cnt
+                losses.append(loss.item())
+                reg_losses.append(loss.item() + reg_loss)
 
                 nb_tr_examples += input_ids.size(0)
                 nb_tr_steps += 1
@@ -503,10 +547,11 @@ def main():
                     optimizer.zero_grad()
                     global_step += 1
 
+                '''
                 if global_step % 200 == 0:
                     val_result = validate(args, model, processor, tokenizer, output_mode, label_list, device,
-                                          num_labels,
-                                          task_name, tr_loss, global_step, epoch, explainer)
+                                          num_labels, task_name, tr_loss, global_step, epoch, explainer)
+                    # validate current model & update the suppressing list
                     val_acc, val_f1 = val_result['acc'], val_result['f1']
                     if val_f1 > val_best_f1:
                         val_best_f1 = val_f1
@@ -520,9 +565,22 @@ def main():
                         logger.info("Reducing learning rate... Early stop countdown %d" % early_stop_countdown)
                     if early_stop_countdown < 0:
                         break
+                    if global_step > args.max_iter > 0:
+                        break
+                '''
+                if global_step % 200 == 0:
+                    update_suppress_list(args, model, processor, tokenizer, output_mode, label_list, device, explainer)
+                    suppress_records.append(explainer.get_suppress_words())
             if early_stop_countdown < 0:
                 break
+            if global_step > args.max_iter > 0:
+                logger.info('Maximum iteration criteria satisfied, Exit')
+                break
             epoch += 1
+
+        records = [losses, reg_losses, suppress_records]
+        with open(args.stats_file, 'wb') as f:
+            pickle.dump(records, f)
 
     if args.do_eval and (args.local_rank == -1 or torch.distributed.get_rank() == 0):
         if not args.explain:
@@ -530,6 +588,55 @@ def main():
                      task_name, tr_loss, global_step=0, epoch=-1, explainer=explainer)
         else:
             explain(args, model, processor, tokenizer, output_mode, label_list, device)
+
+    if args.do_update_test:
+        words_list = list()
+        words_list.append(explainer.get_suppress_words())
+        update_suppress_list(args, model, processor, tokenizer, output_mode, label_list, device, explainer, verbose=0)
+        words_list.append(explainer.get_suppress_words())
+        for dc in words_list:
+            print(dc)
+            print('----------------------')
+
+
+def update_suppress_list(args, model, processor, tokenizer, output_mode, label_list, device, explainer, verbose=0):
+    model.train(False)
+    if not args.test:
+        eval_examples = processor.get_dev_examples(args.data_dir)
+    else:
+        eval_examples = processor.get_test_examples(args.data_dir)
+    eval_features = convert_examples_to_features(
+        eval_examples, label_list, args.max_seq_length, tokenizer, output_mode, args, verbose=0)
+
+    logger.info("***** Updating suppress list *****")
+    logger.info("  Num examples = %d", len(eval_examples))
+    logger.info("  Batch size = %d", args.eval_batch_size)
+    all_input_ids = torch.tensor([f.input_ids for f in eval_features], dtype=torch.long)
+    all_input_mask = torch.tensor([f.input_mask for f in eval_features], dtype=torch.long)
+    all_segment_ids = torch.tensor([f.segment_ids for f in eval_features], dtype=torch.long)
+
+    if output_mode == "classification":
+        all_label_ids = torch.tensor([f.label_id for f in eval_features], dtype=torch.long)
+    elif output_mode == "regression":
+        all_label_ids = torch.tensor([f.label_id for f in eval_features], dtype=torch.float)
+
+    eval_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
+    # Run prediction for full data
+    eval_sampler = SequentialSampler(eval_data)
+    eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
+
+    wrong_li = [[] for _ in range(4)]
+    right_li = [[] for _ in range(4)]
+    for i, input_batch in enumerate(eval_dataloader):
+        idx_li = find_incorrect_pred(model, input_batch, device)
+        idx_all = list(range(len(input_batch[0])))
+        for j in range(len(wrong_li)):
+            wrong_li[j] += [input_batch[j][idx] for idx in idx_li]
+            right_li[j] += [input_batch[j][idx] for idx in idx_all if idx not in idx_li]
+
+    explainer.update_suppress_words([wrong_li[0], wrong_li[-1]], [right_li[0], right_li[-1]], verbose=verbose)
+
+    model.train(True)
 
 
 def validate(args, model, processor, tokenizer, output_mode, label_list, device, num_labels,
@@ -539,7 +646,7 @@ def validate(args, model, processor, tokenizer, output_mode, label_list, device,
     else:
         eval_examples = processor.get_test_examples(args.data_dir)
     eval_features = convert_examples_to_features(
-        eval_examples, label_list, args.max_seq_length, tokenizer, output_mode, configs, verbose=0)
+        eval_examples, label_list, args.max_seq_length, tokenizer, output_mode, args, verbose=0)
     logger.info("***** Running evaluation *****")
     logger.info("  Num examples = %d", len(eval_examples))
     logger.info("  Batch size = %d", args.eval_batch_size)
@@ -565,6 +672,8 @@ def validate(args, model, processor, tokenizer, output_mode, label_list, device,
 
     # for detailed prediction results
     input_seqs = []
+    wrong_li, right_li = [], []
+    wrong_label, right_label = [], []
 
     for input_ids, input_mask, segment_ids, label_ids in tqdm(eval_dataloader, desc="Evaluating"):
         input_ids = input_ids.to(device)
@@ -589,7 +698,6 @@ def validate(args, model, processor, tokenizer, output_mode, label_list, device,
             with torch.no_grad():
                 reg_loss, reg_cnt = explainer.compute_explanation_loss(input_ids, input_mask, segment_ids, label_ids,
                                                               do_backprop=False)
-            #eval_loss += reg_loss.item()
             eval_loss_reg += reg_loss
             eval_reg_cnt += reg_cnt
 
@@ -606,6 +714,19 @@ def validate(args, model, processor, tokenizer, output_mode, label_list, device,
             token_list = tokenizer.convert_ids_to_tokens(input_ids[b,:i].cpu().numpy().tolist())
             input_seqs.append(' '.join(token_list))
 
+        ''' -------- Recording for false positive samples --------- '''
+        idx_li = find_no_matching(logits, label_ids)
+        wrong_li += [input_ids[idx] for idx in idx_li]
+        right_li += [input_ids[idx] for idx in range(len(input_ids)) if idx not in idx_li]
+        wrong_label += [label_ids[idx] for idx in idx_li]
+        right_label += [label_ids[idx] for idx in range(len(input_ids)) if idx not in idx_li]
+
+    ''' ----- Analyzing the false positive samples ----- '''
+    wrong_li = torch.stack(wrong_li)
+    right_li = torch.stack(right_li)
+    wrong_label = torch.stack(wrong_label)
+    right_label = torch.stack(right_label)
+    explainer.update_suppress_words([wrong_li, wrong_label], [right_li, right_label], verbose=0)
 
     eval_loss = eval_loss / nb_eval_steps
     eval_loss_reg = eval_loss_reg / (eval_reg_cnt + 1e-10)
@@ -632,9 +753,10 @@ def validate(args, model, processor, tokenizer, output_mode, label_list, device,
         logger.info("Epoch %d" % epoch)
         for key in sorted(result.keys()):
             if type(result[key]) is np.float64:
-              logger.info("  {} = {:.4f}".format(key, result[key]))
+                logger.info("  {} = {:.4f}".format(key, result[key]))
             else:
-              logger.info("  %s = %s", key, str(result[key]))
+                logger.info("  %s = %s", key, str(result[key]))
+            writer.write("%s = %s\n" % (key, str(result[key])))
 
     output_detail_file = os.path.join(args.output_dir, "eval_details_%d_%s_%s.txt"
                                     % (global_step, split, args.task_name))
@@ -666,17 +788,17 @@ def explain(args, model, processor, tokenizer, output_mode, label_list, device):
 
     if args.algo == 'soc':
         try:
-            train_lm_dataloder = processor.get_dataloader('train', configs.train_batch_size)
-            dev_lm_dataloader = processor.get_dataloader('dev', configs.train_batch_size)
+            train_lm_dataloder = processor.get_dataloader('train', args.train_batch_size)
+            dev_lm_dataloader = processor.get_dataloader('dev', args.train_batch_size)
         except FileNotFoundError:
             train_lm_dataloder = None
             dev_lm_dataloader = None
 
-        explainer = SamplingAndOcclusionExplain(model, configs, tokenizer, device=device, vocab=tokenizer.vocab,
+        explainer = SamplingAndOcclusionExplain(model, args, tokenizer, device=device, vocab=tokenizer.vocab,
                                                 train_dataloader=train_lm_dataloder,
                                                 dev_dataloader=dev_lm_dataloader,
                                                 lm_dir=args.lm_dir,
-                                                output_path=os.path.join(configs.output_dir, configs.output_filename),
+                                                output_path=os.path.join(args.output_dir, args.output_filename),
                                                )
     else:
         raise ValueError
@@ -692,7 +814,7 @@ def explain(args, model, processor, tokenizer, output_mode, label_list, device):
     else:
         eval_examples = processor.get_test_examples(args.data_dir, label=label_filter)
     eval_features = convert_examples_to_features(
-        eval_examples, label_list, args.max_seq_length, tokenizer, output_mode, configs)
+        eval_examples, label_list, args.max_seq_length, tokenizer, output_mode, args)
     logger.info("***** Running evaluation *****")
     logger.info("  Num examples = %d", len(eval_examples))
     logger.info("  Batch size = %d", args.eval_batch_size)
