@@ -166,7 +166,6 @@ def main():
 
     # whether use explanation regularization
     parser.add_argument("--reg_explanations", action='store_true')
-    parser.add_argument("--targeted_suppress", action='store_true')
     parser.add_argument("--reg_balanced", action='store_true')
     parser.add_argument("--suppress_weighted", action='store_true')
     parser.add_argument("--suppress_fading", type=float, default=0.7)
@@ -441,7 +440,10 @@ def main():
     logger.info('***** Explanation config *****')
     logger.info('\tReg explanation:  \t{}'.format(args.reg_explanations))
     logger.info('\tReg balanced:     \t{}'.format(args.reg_balanced))
-    logger.info('\tTargeted suppress:\t{}'.format(args.targeted_suppress))
+    logger.info('\tWeighted suppress:\t{}'.format(args.suppress_weighted))
+    if args.suppress_weighted:
+        logger.info('\tFading rate:      \t{}'.format(args.suppress_fading))
+        logger.info('\tAmplifying rate:  \t{}'.format(args.suppress_increasing))
     # if args.reg_explanations:
     """
     Language model is used in the explanation method for generating the neighboring instances 
@@ -529,6 +531,8 @@ def main():
                                                                                do_backprop=True)
                         tr_reg_loss += reg_loss  # float
                         tr_reg_cnt += reg_cnt
+                else:
+                    reg_loss = 0.
                 losses.append(loss.item())
                 reg_losses.append(loss.item() + reg_loss)
 
@@ -569,8 +573,28 @@ def main():
                         break
                 '''
                 if global_step % 200 == 0:
-                    update_suppress_list(args, model, processor, tokenizer, output_mode, label_list, device, explainer)
+                    logger.info('***** Steps already made: {} *****'.format(global_step))
+                    val_result = validate(args, model, processor, tokenizer, output_mode, label_list, device,
+                                          num_labels, task_name, tr_loss, global_step, epoch, explainer)
+                    val_acc, val_f1 = val_result['acc'], val_result['f1']
+                    if val_f1 > val_best_f1:
+                        val_best_f1 = val_f1
+                        if args.local_rank == -1 or torch.distributed.get_rank() == 0:
+                            save_model(args, model, tokenizer, num_labels)
+                    else:
+                        # halve the learning rate
+                        for param_group in optimizer.param_groups:
+                            param_group['lr'] *= 0.5
+                        early_stop_countdown -= 1
+                        logger.info("Reducing learning rate... Early stop countdown %d" % early_stop_countdown)
+
+                    update_suppress_list(args, model, processor, tokenizer, output_mode, label_list, device, explainer, train=1)
                     suppress_records.append(explainer.get_suppress_words())
+
+                    if early_stop_countdown < 0:
+                        break
+                    if global_step > args.max_iter > 0:
+                        break
             if early_stop_countdown < 0:
                 break
             if global_step > args.max_iter > 0:
@@ -592,16 +616,18 @@ def main():
     if args.do_update_test:
         words_list = list()
         words_list.append(explainer.get_suppress_words())
-        update_suppress_list(args, model, processor, tokenizer, output_mode, label_list, device, explainer, verbose=0)
+        update_suppress_list(args, model, processor, tokenizer, output_mode, label_list, device, explainer, train=1, verbose=0)
         words_list.append(explainer.get_suppress_words())
         for dc in words_list:
             print(dc)
             print('----------------------')
 
 
-def update_suppress_list(args, model, processor, tokenizer, output_mode, label_list, device, explainer, verbose=0):
+def update_suppress_list(args, model, processor, tokenizer, output_mode, label_list, device, explainer, train=0, verbose=0):
     model.train(False)
-    if not args.test:
+    if train:
+        eval_examples = processor.get_train_examples(args.data_dir)
+    elif args.test:
         eval_examples = processor.get_dev_examples(args.data_dir)
     else:
         eval_examples = processor.get_test_examples(args.data_dir)
@@ -635,7 +661,6 @@ def update_suppress_list(args, model, processor, tokenizer, output_mode, label_l
             right_li[j] += [input_batch[j][idx] for idx in idx_all if idx not in idx_li]
 
     explainer.update_suppress_words([wrong_li[0], wrong_li[-1]], [right_li[0], right_li[-1]], verbose=verbose)
-
     model.train(True)
 
 
@@ -672,10 +697,8 @@ def validate(args, model, processor, tokenizer, output_mode, label_list, device,
 
     # for detailed prediction results
     input_seqs = []
-    wrong_li, right_li = [], []
-    wrong_label, right_label = [], []
 
-    for input_ids, input_mask, segment_ids, label_ids in tqdm(eval_dataloader, desc="Evaluating"):
+    for input_ids, input_mask, segment_ids, label_ids in eval_dataloader:
         input_ids = input_ids.to(device)
         input_mask = input_mask.to(device)
         segment_ids = segment_ids.to(device)
@@ -696,8 +719,13 @@ def validate(args, model, processor, tokenizer, output_mode, label_list, device,
 
         if args.reg_explanations:
             with torch.no_grad():
-                reg_loss, reg_cnt = explainer.compute_explanation_loss(input_ids, input_mask, segment_ids, label_ids,
-                                                              do_backprop=False)
+                if args.neutral_words_file != '':
+                    reg_loss, reg_cnt = explainer.compute_explanation_loss(input_ids, input_mask, segment_ids, label_ids,
+                                                                           do_backprop=False)
+                else:
+                    reg_loss, reg_cnt = explainer.suppres_explanation_loss(input_ids, input_mask, segment_ids, label_ids,
+                                                                           do_backprop=False)
+
             eval_loss_reg += reg_loss
             eval_reg_cnt += reg_cnt
 
@@ -713,20 +741,6 @@ def validate(args, model, processor, tokenizer, output_mode, label_list, device,
                 i += 1
             token_list = tokenizer.convert_ids_to_tokens(input_ids[b,:i].cpu().numpy().tolist())
             input_seqs.append(' '.join(token_list))
-
-        ''' -------- Recording for false positive samples --------- '''
-        idx_li = find_no_matching(logits, label_ids)
-        wrong_li += [input_ids[idx] for idx in idx_li]
-        right_li += [input_ids[idx] for idx in range(len(input_ids)) if idx not in idx_li]
-        wrong_label += [label_ids[idx] for idx in idx_li]
-        right_label += [label_ids[idx] for idx in range(len(input_ids)) if idx not in idx_li]
-
-    ''' ----- Analyzing the false positive samples ----- '''
-    wrong_li = torch.stack(wrong_li)
-    right_li = torch.stack(right_li)
-    wrong_label = torch.stack(wrong_label)
-    right_label = torch.stack(right_label)
-    explainer.update_suppress_words([wrong_li, wrong_label], [right_li, right_label], verbose=0)
 
     eval_loss = eval_loss / nb_eval_steps
     eval_loss_reg = eval_loss_reg / (eval_reg_cnt + 1e-10)
@@ -759,7 +773,7 @@ def validate(args, model, processor, tokenizer, output_mode, label_list, device,
             writer.write("%s = %s\n" % (key, str(result[key])))
 
     output_detail_file = os.path.join(args.output_dir, "eval_details_%d_%s_%s.txt"
-                                    % (global_step, split, args.task_name))
+                                      % (global_step, split, args.task_name))
     with open(output_detail_file,'w') as writer:
         for i, seq in enumerate(input_seqs):
             pred = preds[i]
@@ -799,7 +813,7 @@ def explain(args, model, processor, tokenizer, output_mode, label_list, device):
                                                 dev_dataloader=dev_lm_dataloader,
                                                 lm_dir=args.lm_dir,
                                                 output_path=os.path.join(args.output_dir, args.output_filename),
-                                               )
+                                                )
     else:
         raise ValueError
 
@@ -866,6 +880,7 @@ def save_model(args, model, tokenizer, num_labels):
     torch.save(model_to_save.state_dict(), output_model_file)
     model_to_save.config.to_json_file(output_config_file)
     tokenizer.save_vocabulary(args.output_dir)
+
 
 if __name__ == "__main__":
     main()

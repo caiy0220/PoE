@@ -285,7 +285,7 @@ class SamplingAndOcclusionExplain:
                 w = self.tokenizer.ids_to_tokens[w_ids]
                 self.neg_suppress_words_ids[w_ids] *= self.configs.suppress_fading
                 self.neg_suppress_words[w] *= self.configs.suppress_fading
-                if self.neg_suppress_words_ids[w_ids] <= self.configs.suppress_thresh:
+                if self.neg_suppress_words_ids[w_ids] <= self.configs.suppress_lower_thresh:
                     self.neg_suppress_words_ids.pop(w_ids)
                     self.neg_suppress_words.pop(w)
 
