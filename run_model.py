@@ -22,11 +22,9 @@ Integrated with SOC explanation regularization
 
 from __future__ import absolute_import, division, print_function
 
-import argparse
 import logging
 import os
 import random
-import sys
 import json
 import pickle
 
@@ -50,7 +48,7 @@ from bert.tokenization import BertTokenizer
 from bert.optimization import BertAdam, WarmupLinearSchedule
 
 from loader import GabProcessor, WSProcessor, NytProcessor, convert_examples_to_features
-from utils.config import configs, combine_args
+import utils.config as config
 
 # for hierarchical explanation algorithms
 from hiex import SamplingAndOcclusionExplain
@@ -116,173 +114,16 @@ def find_incorrect_pred(model, input_batch, device='cuda'):
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    logger.info('Current version of run_model: 0.000.1')
 
-    # Required parameters
-    parser.add_argument("--data_dir",
-                        default=None,
-                        type=str,
-                        required=True,
-                        help="The input data dir. Should contain the .tsv files (or other data files) for the task.")
-    parser.add_argument("--bert_model", default=None, type=str, required=True,
-                        help="Bert pre-trained model selected in the list: bert-base-uncased, "
-                             "bert-large-uncased, bert-base-cased, bert-large-cased, bert-base-multilingual-uncased, "
-                             "bert-base-multilingual-cased, bert-base-chinese.")
-    parser.add_argument("--task_name",
-                        default=None,
-                        type=str,
-                        required=True,
-                        help="The name of the task to train.")
-    parser.add_argument("--output_dir",
-                        default=None,
-                        type=str,
-                        required=True,
-                        help="The output directory where the model predictions and checkpoints will be written.")
-    parser.add_argument("--negative_weight", default=1., type=float)
-    parser.add_argument("--neutral_words_file", default='')
-    parser.add_argument("--neg_suppress_file", default='')
-    parser.add_argument("--pos_suppress_file", default='')
-
-    # if true, use test data instead of val data
-    parser.add_argument("--test", action='store_true')
-
-    # Explanation specific arguments below
-
-    # whether run explanation algorithms
-    parser.add_argument("--explain", action='store_true', help='if true, explain test set predictions')
-    parser.add_argument("--debug", action='store_true')
-
-    # which algorithm to run
-    parser.add_argument("--algo", choices=['soc'])
-
-    # the output filename without postfix
-    parser.add_argument("--output_filename", default='temp.tmp')
-
-    # see utils/config.py
-    parser.add_argument("--use_padding_variant", action='store_true')
-    parser.add_argument("--mask_outside_nb", action='store_true')
-    parser.add_argument("--nb_range", type=int)
-    parser.add_argument("--sample_n", type=int)
-
-    # whether use explanation regularization
-    parser.add_argument("--reg_explanations", action='store_true')
-    parser.add_argument("--reg_balanced", action='store_true')
-    parser.add_argument("--suppress_weighted", action='store_true')
-    parser.add_argument("--suppress_fading", type=float, default=0.7)
-    parser.add_argument("--suppress_increasing", type=float, default=1.2)
-    parser.add_argument("--suppress_lower_thresh", type=float, default=0.5)
-    parser.add_argument("--suppress_higher_thresh", type=float, default=2.)
-    parser.add_argument("--reg_strength", type=float)
-    parser.add_argument("--reg_mse", action='store_true')
-
-    # whether discard other neutral words during regularization. default: False
-    parser.add_argument("--discard_other_nw", action='store_false', dest='keep_other_nw')
-
-    # whether remove neutral words when loading datasets
-    parser.add_argument("--remove_nw", action='store_true')
-
-    # if true, generate hierarchical explanations instead of word level outputs.
-    # Only useful when the --explain flag is also added.
-    parser.add_argument("--hiex", action='store_true')
-    parser.add_argument("--hiex_tree_height", default=5, type=int)
-
-    # whether add the sentence itself to the sample set in SOC
-    parser.add_argument("--hiex_add_itself", action='store_true')
-
-    # the directory where the lm is stored
-    parser.add_argument("--lm_dir", default='runs/lm')
-
-    # if configured, only generate explanations for instances with given line numbers
-    parser.add_argument("--hiex_idxs", default=None)
-    # if true, use absolute values of explanations for hierarchical clustering
-    parser.add_argument("--hiex_abs", action='store_true')
-
-    # if either of the two is true, only generate explanations for positive / negative instances
-    parser.add_argument("--only_positive", action='store_true')
-    parser.add_argument("--only_negative", action='store_true')
-
-    # stop after generating x explanation
-    parser.add_argument("--stop", default=100000000, type=int)
-
-    # early stopping with decreasing learning rate. 0: direct exit when validation F1 decreases
-    parser.add_argument("--early_stop", default=5, type=int)
-    parser.add_argument("--max_iter", default=-1, type=int)
-
-    parser.add_argument("--stats_file", default='log.pkl')
-
-    # other external arguments originally here in pytorch_transformers
-
-    parser.add_argument("--cache_dir",
-                        default="",
-                        type=str,
-                        help="Where do you want to store the pre-trained models downloaded from s3")
-    parser.add_argument("--max_seq_length",
-                        default=128,
-                        type=int,
-                        help="The maximum total input sequence length after WordPiece tokenization. \n"
-                             "Sequences longer than this will be truncated, and sequences shorter \n"
-                             "than this will be padded.")
-    parser.add_argument("--do_train",
-                        action='store_true',
-                        help="Whether to run training.")
-    parser.add_argument("--do_eval",
-                        action='store_true',
-                        help="Whether to run eval on the dev set.")
-    parser.add_argument("--do_update_test",
-                        action='store_true')
-    parser.add_argument("--do_lower_case",
-                        action='store_true',
-                        help="Set this flag if you are using an uncased model.")
-    parser.add_argument("--train_batch_size",
-                        default=32,
-                        type=int,
-                        help="Total batch size for training.")
-    parser.add_argument("--eval_batch_size",
-                        default=32,
-                        type=int,
-                        help="Total batch size for eval.")
-    parser.add_argument("--learning_rate",
-                        default=5e-5,
-                        type=float,
-                        help="The initial learning rate for Adam.")
-    parser.add_argument("--num_train_epochs",
-                        default=3.0,
-                        type=float,
-                        help="Total number of training epochs to perform.")
-    parser.add_argument("--warmup_proportion",
-                        default=0.1,
-                        type=float,
-                        help="Proportion of training to perform linear learning rate warmup for. "
-                             "E.g., 0.1 = 10%% of training.")
-    parser.add_argument("--no_cuda",
-                        action='store_true',
-                        help="Whether not to use CUDA when available")
-    parser.add_argument("--local_rank",
-                        type=int,
-                        default=-1,
-                        help="local_rank for distributed training on gpus")
-    parser.add_argument('--seed',
-                        type=int,
-                        default=42,
-                        help="random seed for initialization")
-    parser.add_argument('--gradient_accumulation_steps',
-                        type=int,
-                        default=1,
-                        help="Number of updates steps to accumulate before performing a backward/update pass.")
-    parser.add_argument('--fp16',
-                        action='store_true',
-                        help="Whether to use 16-bit float precision instead of 32-bit")
-    parser.add_argument('--loss_scale',
-                        type=float, default=0,
-                        help="Loss scaling to improve fp16 numeric stability. Only used when fp16 set to True.\n"
-                             "0 (default value): dynamic loss scaling.\n"
-                             "Positive power of 2: static loss scaling value.\n")
-    parser.add_argument('--server_ip', type=str, default='', help="Can be used for distant debugging.")
-    parser.add_argument('--server_port', type=str, default='', help="Can be used for distant debugging.")
+    parser = config.get_new_parser()
+    parser = config.add_general_configs(parser)
+    parser = config.add_explanation_configs(parser)
+    parser = config.add_training_configs(parser)
     args = parser.parse_args()
 
-    combine_args(configs, args)
-    args = configs
+    config.combine_args(args, config.configs)
+    # args = configs
 
     if args.server_ip and args.server_port:
         # Distant debugging - see https://code.visualstudio.com/docs/python/debugging#_attach-to-a-local-script
@@ -332,8 +173,8 @@ def main():
     if n_gpu > 0:
         torch.cuda.manual_seed_all(args.seed)
 
-    if not args.do_train and not args.do_eval and not args.do_update_test:
-        raise ValueError("At least one of `do_train` or `do_eval` or `do_update_test` must be True.")
+    if not args.do_train and not args.do_eval:
+        raise ValueError("At least one of `do_train` or `do_eval` must be True.")
 
     # if os.path.exists(args.output_dir) and os.listdir(args.output_dir) and args.do_train:
     #    raise ValueError("Output directory ({}) already exists and is not empty.".format(args.output_dir))
@@ -444,6 +285,10 @@ def main():
     if args.suppress_weighted:
         logger.info('\tFading rate:      \t{}'.format(args.suppress_fading))
         logger.info('\tAmplifying rate:  \t{}'.format(args.suppress_increasing))
+
+    logger.info('\tSuppress lazy:    \t{}'.format(args.suppress_lazy))
+    logger.info('\tFitlering thresh: \t{}'.format(args.filtering_thresh))
+
     # if args.reg_explanations:
     """
     Language model is used in the explanation method for generating the neighboring instances 
@@ -613,15 +458,6 @@ def main():
         else:
             explain(args, model, processor, tokenizer, output_mode, label_list, device)
 
-    if args.do_update_test:
-        words_list = list()
-        words_list.append(explainer.get_suppress_words())
-        update_suppress_list(args, model, processor, tokenizer, output_mode, label_list, device, explainer, train=1, verbose=0)
-        words_list.append(explainer.get_suppress_words())
-        for dc in words_list:
-            print(dc)
-            print('----------------------')
-
 
 def update_suppress_list(args, model, processor, tokenizer, output_mode, label_list, device, explainer, train=0, verbose=0):
     model.train(False)
@@ -660,7 +496,11 @@ def update_suppress_list(args, model, processor, tokenizer, output_mode, label_l
             wrong_li[j] += [input_batch[j][idx] for idx in idx_li]
             right_li[j] += [input_batch[j][idx] for idx in idx_all if idx not in idx_li]
 
-    explainer.update_suppress_words([wrong_li[0], wrong_li[-1]], [right_li[0], right_li[-1]], verbose=verbose)
+    if args.suppress_lazy:
+        explainer.update_suppress_words_lazy([wrong_li[0], wrong_li[-1]], [right_li[0], right_li[-1]], verbose=verbose)
+    else:
+        explainer.update_suppress_words([wrong_li[0], wrong_li[-1]], [right_li[0], right_li[-1]], verbose=verbose)
+
     model.train(True)
 
 

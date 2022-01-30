@@ -46,6 +46,7 @@ def color_picker(inp, color_list, rules):
 class SamplingAndOcclusionExplain:
     def __init__(self, model, configs, tokenizer, output_path, device, lm_dir=None, train_dataloader=None,
                  dev_dataloader=None, vocab=None):
+        logger.info('Current version of SOC: 0.000.1')
         self.configs = configs
         self.model = model
         self.lm_dir = lm_dir
@@ -98,6 +99,10 @@ class SamplingAndOcclusionExplain:
 
         self.stop_words, self.stop_words_ids = self._get_stop_words()
         self.count_thresh = 10
+        self.filtering_thresh = configs.filtering_thresh
+        self.word_appear_records = dict()
+        self.window_size = configs.window_size
+        self.window_count = self.window_size * configs.ratio_in_window
 
     def detect_and_load_lm_model(self):
         if not self.lm_dir:
@@ -206,6 +211,104 @@ class SamplingAndOcclusionExplain:
     def get_suppress_words(self):
         return self.neg_suppress_words.copy()
 
+    def update_suppress_words_lazy(self, wrong_li, right_li, verbose=0):
+        fns, fps, tns, tps = [], [], [], []
+        for idx in range(len(wrong_li[0])):
+            if wrong_li[1][idx] == 1:
+                # the ground truth is positive, indicating the instance is false negative instance
+                fns.append(wrong_li[0][idx].numpy().tolist())
+            else:
+                fps.append(wrong_li[0][idx].numpy().tolist())
+
+        for idx in range(len(right_li[0])):
+            if right_li[1][idx] == 1:
+                # the ground truth is positive, indicating the instance is false negative instance
+                tps.append(right_li[0][idx].numpy().tolist())
+            else:
+                tns.append(right_li[0][idx].numpy().tolist())
+
+        tnps = tns + tps
+
+        normalized = True
+
+        fns_word_count_li, fns_word_num_total = self._words_count(fns)
+        fps_word_count_li, fps_word_num_total = self._words_count(fps)
+        tnps_word_count_li, tnps_word_num_total = self._words_count(tnps)
+
+        fns_word_count, fns_word_num_total = self._filter_minimal_count(dict(fns_word_count_li))
+        fps_word_count, fps_word_num_total = self._filter_minimal_count(dict(fps_word_count_li))
+        tnps_word_count, tnps_word_num_total = self._filter_minimal_count(dict(tnps_word_count_li))
+
+        fns_word_ratio = _count2ratio(fns_word_count, fns_word_num_total)
+        fps_word_ratio = _count2ratio(fps_word_count, fps_word_num_total)
+        tnps_word_ratio = _count2ratio(tnps_word_count, tnps_word_num_total)
+
+        word_ratio_diff_fns_tnps = dict()
+        for w in fns_word_ratio.keys():
+            if w not in tnps_word_ratio:
+                word_ratio_diff_fns_tnps[w] = 1.
+                # continue
+            else:
+                word_ratio_diff_fns_tnps[w] = _get_ratio_diff(fns_word_ratio[w], tnps_word_ratio[w], normalized)
+        sorted_diff_fns_tnps = sorted(word_ratio_diff_fns_tnps.items(), key=lambda item: item[1])[::-1]
+
+        word_ratio_diff_fps_tnps = dict()
+        for w in fps_word_ratio.keys():
+            if w not in tnps_word_ratio:
+                word_ratio_diff_fps_tnps[w] = 1.
+                # continue
+            else:
+                word_ratio_diff_fps_tnps[w] = _get_ratio_diff(fps_word_ratio[w], tnps_word_ratio[w], normalized)
+        sorted_diff_fps_tnps = sorted(word_ratio_diff_fps_tnps.items(), key=lambda item: item[1])[::-1]
+
+        if verbose:
+            target_words = ['white', 'black', 'jew', 'muslims', 'jews', 'islam']
+            new_words = ['blacks', 'whites', 'muslim', 'women', 'obama']
+            plot_top_words(sorted_diff_fns_tnps, 30, self.tokenizer, target_words + new_words, [], title='False negative')
+            plot_top_words(sorted_diff_fps_tnps, 30, self.tokenizer, target_words + new_words, [], title='False positive')
+            plt.show()
+
+        new_suppress_words_ids = []
+        for p in sorted_diff_fps_tnps:
+            if p[1] <= self.filtering_thresh:
+                break
+            target = p[0]
+            new_suppress_words_ids.append(target)
+            if target not in self.word_appear_records:
+                self.word_appear_records[target] = [1]
+            else:
+                self.update_word_appear_records(target, 1)
+
+        for w_ids in self.word_appear_records.keys():
+            if w_ids not in new_suppress_words_ids:
+                self.update_word_appear_records(w_ids, 0)
+        self._update_suppress_words()
+        logger.info('------- Current Suppressing List --------')
+        logger.info(self.neg_suppress_words)
+
+    def _update_suppress_words(self):
+        word_counts_dict = self._get_word_counts()
+        for w_ids in word_counts_dict.keys():
+            if word_counts_dict[w_ids] == 0:
+                self.word_appear_records.pop(w_ids)
+
+            if word_counts_dict[w_ids] >= self.window_count:
+                w = self.tokenizer.ids_to_tokens[w_ids]
+                self.neg_suppress_words_ids[w_ids] = 1.
+                self.neg_suppress_words[w] = 1.
+
+    def _get_word_counts(self):
+        word_count_dict = dict()
+        to_be_removed = []
+        for w_ids in self.word_appear_records.keys():
+            word_count_dict[w_ids] = sum(self.word_appear_records[w_ids])
+        return word_count_dict
+
+    def update_word_appear_records(self, w_ids, v):
+        self.word_appear_records[w_ids].append(v)
+        if len(self.word_appear_records[w_ids]) > self.window_size:
+            self.word_appear_records[w_ids].pop(0)
+
     def update_suppress_words(self, wrong_li, right_li, verbose=0):
         fns, fps, tns, tps = [], [], [], []
         for idx in range(len(wrong_li[0])):
@@ -265,7 +368,7 @@ class SamplingAndOcclusionExplain:
 
         new_suppress_words_ids = []
         for p in sorted_diff_fps_tnps:
-            if p[1] <= 0.7:
+            if p[1] <= self.filtering_thresh:
                 break
             new_suppress_words_ids.append(p[0])
 
