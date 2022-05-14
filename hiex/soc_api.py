@@ -46,7 +46,7 @@ def color_picker(inp, color_list, rules):
 class SamplingAndOcclusionExplain:
     def __init__(self, model, configs, tokenizer, output_path, device, lm_dir=None, train_dataloader=None,
                  dev_dataloader=None, vocab=None):
-        logger.info('Current version of SOC: 0.000.1')
+        logger.info('Current version of SOC: 0.000.105')
         self.configs = configs
         self.model = model
         self.lm_dir = lm_dir
@@ -211,7 +211,7 @@ class SamplingAndOcclusionExplain:
     def get_suppress_words(self):
         return self.neg_suppress_words.copy()
 
-    def update_suppress_words_lazy(self, wrong_li, right_li, verbose=0):
+    def update_suppress_words_lazy(self, wrong_li, right_li, verbose=0, allow_change=False):
         fns, fps, tns, tps = [], [], [], []
         for idx in range(len(wrong_li[0])):
             if wrong_li[1][idx] == 1:
@@ -268,23 +268,25 @@ class SamplingAndOcclusionExplain:
             plot_top_words(sorted_diff_fps_tnps, 30, self.tokenizer, target_words + new_words, [], title='False positive')
             plt.show()
 
-        new_suppress_words_ids = []
-        for p in sorted_diff_fps_tnps:
-            if p[1] <= self.filtering_thresh:
-                break
-            target = p[0]
-            new_suppress_words_ids.append(target)
-            if target not in self.word_appear_records:
-                self.word_appear_records[target] = [1]
-            else:
-                self.update_word_appear_records(target, 1)
+        if allow_change:
+            new_suppress_words_ids = []
+            for p in sorted_diff_fps_tnps:
+                if p[1] <= self.filtering_thresh:
+                    break
+                target = p[0]
+                new_suppress_words_ids.append(target)
+                if target not in self.word_appear_records:
+                    self.word_appear_records[target] = [1]
+                else:
+                    self.update_word_appear_records(target, 1)
 
-        for w_ids in self.word_appear_records.keys():
-            if w_ids not in new_suppress_words_ids:
-                self.update_word_appear_records(w_ids, 0)
-        self._update_suppress_words()
-        logger.info('------- Current Suppressing List --------')
-        logger.info(self.neg_suppress_words)
+            for w_ids in self.word_appear_records.keys():
+                if w_ids not in new_suppress_words_ids:
+                    self.update_word_appear_records(w_ids, 0)
+            self._update_suppress_words()
+            logger.info('------- Current Suppressing List --------')
+            logger.info(self.neg_suppress_words)
+        return fps_word_ratio, tnps_word_ratio, word_ratio_diff_fps_tnps
 
     def _update_suppress_words(self):
         word_counts_dict = self._get_word_counts()
@@ -411,7 +413,7 @@ class SamplingAndOcclusionExplain:
         assert neutral_words
     '''
 
-    def suppres_explanation_loss(self, input_ids_batch, input_mask_batch, segment_ids_batch, label_ids_batch,
+    def suppress_explanation_loss(self, input_ids_batch, input_mask_batch, segment_ids_batch, label_ids_batch,
                                  do_backprop=False):
         # TODO: only for negative words by now
         if len(self.neg_suppress_words_ids) == 0:

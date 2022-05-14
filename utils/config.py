@@ -120,6 +120,9 @@ def add_general_configs(parser, **kwargs):
     general_params.add_argument("--do_train", action='store_true', help="Whether to run training.")
     general_params.add_argument("--do_eval", action='store_true', help="Whether to run eval on the dev set.")
 
+    # Recording activation change if set to be True
+    general_params.add_argument("--get_attr", action='store_true', help="Whether check attribution changes over epochs")
+
     # ---------------------- Seldom used ----------------------
     # if true, generate hierarchical explanations instead of word level outputs.
     # Only useful when the --explain flag is also added.

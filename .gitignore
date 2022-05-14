@@ -2,4 +2,4 @@ data
 env
 runs
 **__pycache__
-
+.idea
