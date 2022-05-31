@@ -34,7 +34,6 @@ import torch
 from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
                               TensorDataset)
 from torch.utils.data.distributed import DistributedSampler
-from torch import nn
 from torch.nn import functional as F
 from tqdm import tqdm
 
@@ -53,6 +52,8 @@ import utils.config as config
 
 # for hierarchical explanation algorithms
 from hiex import SamplingAndOcclusionExplain
+# from poe import PowerOfExplanation
+
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +143,7 @@ def main():
                         datefmt='%m/%d/%Y %H:%M:%S',
                         level=logging.INFO if args.local_rank in [-1, 0] else logging.WARN)
 
-    logger.info('Current version of main: 0.000.197')
+    logger.info('Current version of main: 0.000.213')
 
     config.combine_args(config.configs, args)
     args = config.configs
@@ -283,6 +284,10 @@ def main():
                                  warmup=args.warmup_proportion,
                                  t_total=num_train_optimization_steps)
 
+    # poe = PowerOfExplanation(args, device)
+    # poe.load_tools(tokenizer, processor)
+    # poe.load_model(model, optimizer)
+
     global_step = 0
     tr_loss, tr_reg_loss = 0, 0
     tr_reg_cnt = 0
@@ -333,8 +338,14 @@ def main():
     rate (to half of the initial value?), then run a third phase to finalize the model to get a
     better performance.
     """
-    phases_list = [0, 1, 2]  # 0: normal, 1: constrained, 2: stabilize
+    if args.neutral_words_file:
+        phases_list = [1]
+    elif args.reg_explanations:
+        phases_list = [0, 1, 2]  # 0: normal, 1: constrained, 2: stabilize
+    else:
+        phases_list = [0]
     phases_iter = iter(phases_list)
+
     if args.do_train:
         epoch = 0
         train_features = convert_examples_to_features(
@@ -346,6 +357,8 @@ def main():
         all_input_ids = torch.tensor([f.input_ids for f in train_features], dtype=torch.long)
         all_input_mask = torch.tensor([f.input_mask for f in train_features], dtype=torch.long)
         all_segment_ids = torch.tensor([f.segment_ids for f in train_features], dtype=torch.long)
+
+        explainer.get_global_words_count(all_input_ids.numpy())
 
         if output_mode == "classification":
             all_label_ids = torch.tensor([f.label_id for f in train_features], dtype=torch.long)
@@ -376,6 +389,10 @@ def main():
         # |                     Start Training                    |
         # ---------------------------------------------------------
         phase = next(phases_iter, -1)
+        logger.info(phases_list)
+        logger.info('-' * 50)
+        logger.info('|            Move to next phase: {}              |'.format(phase))
+        logger.info('-' * 50)
         no_progress_cnt = 0
         step_in_phase = 0
         for epoch_idx in range(int(args.num_train_epochs)):
@@ -442,44 +459,77 @@ def main():
                     global_step += 1
                     step_in_phase += 1
 
-                if global_step % 200 == 0:
+                if global_step % args.reg_steps == 0:
                     logger.info('***** Steps already made: {} *****'.format(global_step))
 
+                    ''' --------------- Checking proxy and recoding --------------- '''
                     # if phase == 0:
                     update_suppress_list(args, model, processor, tokenizer,
                                          output_mode, label_list, device,
                                          explainer, eval_features=train_features,
                                          attr_dicts=[manual_change_dict, attr_change_dict],
-                                         steps=global_step, allow_change=(phase == 0))
-                    suppress_records.append(explainer.get_suppress_words())
+                                         steps=global_step, allow_change=(phase == 0),
+                                         verbose=1)
+                    # suppress_records.append(explainer.get_suppress_words())
+                    if args.neutral_words_file == '':
+                        buff = explainer.get_suppress_words()
+                    else:
+                        buff = explainer.get_neutral_words()
 
                     # Update current attribution of suppressed words
                     if args.get_attr:
-                        new_words = list(set(suppress_records[-1]) - set(suppress_records[-2]))
+                        # new_words = list(set(suppress_records[-1]) - set(suppress_records[-2]))
+                        new_words = list(set(buff) - set(suppress_records[-1]))
                         update_attr_dict(attr_change_dict, new_words, tokenizer.vocab)
 
                     val_result = validate(args, model, processor, tokenizer, output_mode, label_list, device,
                                           num_labels, task_name, tr_loss, global_step, epoch, explainer,
                                           [manual_change_dict, attr_change_dict])
-                    val_acc, val_f1 = val_result['acc'], val_result['f1']
-                    if val_f1 > val_best_f1:
-                        val_best_f1 = val_f1
-                        if args.local_rank == -1 or torch.distributed.get_rank() == 0:
-                            save_model(args, model, tokenizer, num_labels, phase=phase, postfix='_best')
+
+                    if phase == 0:
+                        filtering_ws = []
+                        for w in new_words:
+                            avg_attr = np.mean(next(iter(attr_change_dict[w].attr_changes.values())))
+                            if abs(avg_attr) < 0.65:
+                                filtering_ws.append(w)
+                                del attr_change_dict[w]
+                                logger.info('\tFiltered word: {:>15} with avg. attr: {:.3f}'.format(w, avg_attr))
+                        explainer.filter_suppress_words(filtering_ws)
+                        logger.info('\tFinal check with words that are removed:')
+                        logger.info('\t{}'.format(set(buff) - set(explainer.get_suppress_words())))
+                        logger.info('-'*20)
+
+                        logger.info('------- Current Suppressing List --------')
+                        logger.info(explainer.neg_suppress_words)
+
+                    if args.neutral_words_file == '':
+                        suppress_records.append(explainer.get_suppress_words())
                     else:
-                        # halve the learning rate
-                        if phase != 0 and step_in_phase <= 1000:
-                            pass
+                        suppress_records.append(explainer.get_neutral_words())
+
+                    val_acc, val_f1 = val_result['acc'], val_result['f1']
+
+                    ''' --------------- Recording best and update lr only for val_steps --------------- '''
+                    if global_step % args.val_steps == 0:
+                        logger.info("***** Validation *****")
+                        if val_f1 > val_best_f1:
+                            val_best_f1 = val_f1
+                            if args.local_rank == -1 or torch.distributed.get_rank() == 0:
+                                save_model(args, model, tokenizer, num_labels, phase=phase, postfix='_best')
                         else:
+                            # # halve the learning rate
+                            # if phase != 0 and step_in_phase <= 1000:
+                            #     pass
+                            # else:
                             for param_group in optimizer.param_groups:
                                 param_group['lr'] *= 0.5
                             no_progress_cnt += 1
                             logger.info("Reducing learning rate... No progress count: %d" % no_progress_cnt)
 
-                    lr_str = ''
-                    for param_group in optimizer.param_groups:
-                        lr_str += str(param_group['lr']) + '  '
-                    logger.info("Current learning rate: {}".format(lr_str))
+                        lr_str = ''
+                        for param_group in optimizer.param_groups:
+                            lr_str += str(param_group['lr']) + '  '
+                        logger.info("Current learning rate: {}".format(lr_str))
 
                     if step_in_phase >= args.max_iter > 0:
                         # steps count, move to next phase
@@ -494,6 +544,8 @@ def main():
                         val_best_f1 = -1
                         no_progress_cnt = 0
                         step_in_phase = 0
+                        if phase == 2:
+                            args.max_iter += args.extra_iter
 
             # if global_step > args.max_iter > 0:
             #     logger.info('Maximum iteration criteria satisfied, Exit')
@@ -568,6 +620,7 @@ def update_suppress_list(args, model, processor, tokenizer, output_mode, label_l
 
 
 def update_fpr(stats_li, steps, manual_attr_dict, attr_change_dict):
+    logger.info('------- Update steps: {}'.format(steps))
     update_fpr_dict(manual_attr_dict, stats_li, steps)
     update_fpr_dict(attr_change_dict, stats_li, steps)
 

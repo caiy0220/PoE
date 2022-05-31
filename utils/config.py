@@ -233,4 +233,8 @@ def add_training_configs(parser, **kwargs):
                                       "than this will be padded.")
     training_params.add_argument("--do_lower_case", action='store_true',
                                  help="Set this flag if you are using an uncased model.")
+    training_params.add_argument("--val_steps", default=200, type=int,
+                                 help="Interval of validation during training")
+    training_params.add_argument("--reg_steps", default=200, type=int,
+                                 help="Interval of checking proxy of regularization term, must be equal/lower than val_steps")
     return parser

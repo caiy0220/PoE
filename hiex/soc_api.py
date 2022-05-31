@@ -17,6 +17,12 @@ def _count2ratio(count_dict, num_word_total):
         dict_ratio[w] = float(count_dict[w]) / num_word_total
     return dict_ratio
 
+def _fpp(count_dict, total_dict):
+    dict_ratio = dict()
+    for w in count_dict.keys():
+        dict_ratio[w] = float(count_dict[w]) / total_dict[w]
+    return dict_ratio
+
 def _get_ratio_diff(ratio0, ratio1, normalized=False):
     base = ratio0 if normalized else 1
     return (ratio0 - ratio1) / base
@@ -46,7 +52,7 @@ def color_picker(inp, color_list, rules):
 class SamplingAndOcclusionExplain:
     def __init__(self, model, configs, tokenizer, output_path, device, lm_dir=None, train_dataloader=None,
                  dev_dataloader=None, vocab=None):
-        logger.info('Current version of SOC: 0.000.105')
+        logger.info('Current version of SOC: 0.000.201')
         self.configs = configs
         self.model = model
         self.lm_dir = lm_dir
@@ -81,8 +87,8 @@ class SamplingAndOcclusionExplain:
         if configs.neutral_words_file != '':
             # self.mode = 0  # debiasing mode
             self.neutral_words, self.neutral_words_ids = self._loading_words(configs.neutral_words_file)
-            # self.neg_suppress_words = []
-            # self.neg_suppress_words_ids = []
+            self.neg_suppress_words = []
+            self.neg_suppress_words_ids = []
             self.pos_suppress_words = []
             self.pos_suppress_words_ids = []
         else:
@@ -96,6 +102,8 @@ class SamplingAndOcclusionExplain:
                 logger.warning('***** Features not exist in given configs, might be using an older version of model *****')
                 self.neg_suppress_words, self.neg_suppress_words_ids = dict(), dict()
                 self.pos_suppress_words, self.pos_suppress_words_ids = dict(), dict()
+
+        self.word_count_dict = dict()
 
         self.stop_words, self.stop_words_ids = self._get_stop_words()
         self.count_thresh = 10
@@ -208,8 +216,16 @@ class SamplingAndOcclusionExplain:
                 total_count += count_dict[w]
         return cp, total_count
 
+    def get_global_words_count(self, corpus):
+        counter, _ = self._words_count(corpus)
+        for wid, cnt in counter:
+            self.word_count_dict[wid] = cnt
+
     def get_suppress_words(self):
         return self.neg_suppress_words.copy()
+
+    def get_neutral_words(self):
+        return self.neutral_words.copy()
 
     def update_suppress_words_lazy(self, wrong_li, right_li, verbose=0, allow_change=False):
         fns, fps, tns, tps = [], [], [], []
@@ -235,14 +251,21 @@ class SamplingAndOcclusionExplain:
         fps_word_count_li, fps_word_num_total = self._words_count(fps)
         tnps_word_count_li, tnps_word_num_total = self._words_count(tnps)
 
+        # TODO: filter out rear terms directly while computing FPP
         fns_word_count, fns_word_num_total = self._filter_minimal_count(dict(fns_word_count_li))
         fps_word_count, fps_word_num_total = self._filter_minimal_count(dict(fps_word_count_li))
         tnps_word_count, tnps_word_num_total = self._filter_minimal_count(dict(tnps_word_count_li))
 
-        fns_word_ratio = _count2ratio(fns_word_count, fns_word_num_total)
-        fps_word_ratio = _count2ratio(fps_word_count, fps_word_num_total)
-        tnps_word_ratio = _count2ratio(tnps_word_count, tnps_word_num_total)
+        # fns_word_ratio = _count2ratio(fns_word_count, fns_word_num_total)
+        # fps_word_ratio = _count2ratio(fps_word_count, fps_word_num_total)
+        # tnps_word_ratio = _count2ratio(tnps_word_count, tnps_word_num_total)
+        fns_word_ratio = _fpp(fns_word_count, self.word_count_dict)
+        fps_word_ratio = _fpp(fps_word_count, self.word_count_dict)
+        tnps_word_ratio = _fpp(tnps_word_count, self.word_count_dict)
+        sorted_diff_fns_tnps = sorted(fns_word_ratio.items(), key=lambda item: item[1])[::-1]
+        sorted_diff_fps_tnps = sorted(fps_word_ratio.items(), key=lambda item: item[1])[::-1]
 
+        '''
         word_ratio_diff_fns_tnps = dict()
         for w in fns_word_ratio.keys():
             if w not in tnps_word_ratio:
@@ -260,19 +283,27 @@ class SamplingAndOcclusionExplain:
             else:
                 word_ratio_diff_fps_tnps[w] = _get_ratio_diff(fps_word_ratio[w], tnps_word_ratio[w], normalized)
         sorted_diff_fps_tnps = sorted(word_ratio_diff_fps_tnps.items(), key=lambda item: item[1])[::-1]
+        '''
 
-        if verbose:
-            target_words = ['white', 'black', 'jew', 'muslims', 'jews', 'islam']
-            new_words = ['blacks', 'whites', 'muslim', 'women', 'obama']
-            plot_top_words(sorted_diff_fns_tnps, 30, self.tokenizer, target_words + new_words, [], title='False negative')
-            plot_top_words(sorted_diff_fps_tnps, 30, self.tokenizer, target_words + new_words, [], title='False positive')
-            plt.show()
+        # if verbose:
+            # target_words = ['white', 'black', 'jew', 'muslims', 'jews', 'islam']
+            # new_words = ['blacks', 'whites', 'muslim', 'women', 'obama']
+            # plot_top_words(sorted_diff_fns_tnps, 30, self.tokenizer, target_words + new_words, [], title='False negative')
+            # plot_top_words(sorted_diff_fps_tnps, 30, self.tokenizer, target_words + new_words, [], title='False positive')
+            # plt.show()
+            # for wid, fpp in sorted_diff_fps_tnps[:30]:
+            #     logger.info('{:<12}: {}'.format(self.tokenizer.ids_to_tokens[wid], fpp))
 
         if allow_change:
             new_suppress_words_ids = []
+            cnt = 0
             for p in sorted_diff_fps_tnps:
                 if p[1] <= self.filtering_thresh:
                     break
+                cnt += 1
+
+                if verbose:
+                    logger.info('{:<12}: {:.3f}, [{:<3}, {:<5}]'.format(self.tokenizer.ids_to_tokens[p[0]], p[1], fps_word_count[p[0]], self.word_count_dict[p[0]]))
                 target = p[0]
                 new_suppress_words_ids.append(target)
                 if target not in self.word_appear_records:
@@ -280,13 +311,16 @@ class SamplingAndOcclusionExplain:
                 else:
                     self.update_word_appear_records(target, 1)
 
+            if verbose:
+                logger.info('#{:<4} words added this round'.format(cnt))
+
             for w_ids in self.word_appear_records.keys():
                 if w_ids not in new_suppress_words_ids:
                     self.update_word_appear_records(w_ids, 0)
             self._update_suppress_words()
-            logger.info('------- Current Suppressing List --------')
-            logger.info(self.neg_suppress_words)
-        return fps_word_ratio, tnps_word_ratio, word_ratio_diff_fps_tnps
+            # logger.info('------- Current Suppressing List --------')
+            # logger.info(self.neg_suppress_words)
+        return fps_word_ratio, tnps_word_ratio, fns_word_ratio
 
     def _update_suppress_words(self):
         word_counts_dict = self._get_word_counts()
@@ -298,6 +332,12 @@ class SamplingAndOcclusionExplain:
                 w = self.tokenizer.ids_to_tokens[w_ids]
                 self.neg_suppress_words_ids[w_ids] = 1.
                 self.neg_suppress_words[w] = 1.
+
+    def filter_suppress_words(self, ws):
+        for w in ws:
+            w_id = self.tokenizer.vocab[w]
+            del self.neg_suppress_words_ids[w_id]
+            del self.neg_suppress_words[w]
 
     def _get_word_counts(self):
         word_count_dict = dict()
