@@ -85,7 +85,9 @@ def update_fpr_dict(attr_dict, stats_li, steps):
 class PowerOfExplanation:
     def __init__(self, args, device):
         self.args = args
+        self.supported_modes = ['vanilla', 'mid', 'soc']
         self.device = device
+        self.phases = []
         self.phases_iter = None
         self.phase = -1
 
@@ -118,13 +120,24 @@ class PowerOfExplanation:
         self.ds_train = unpack_features(train_features, self.args)
         self.ds_eval = unpack_features(eval_features, self.args)
 
+    def set_training_mode(self, mode):
+        assert mode in self.supported_modes, 'Unknown mode: [{}], currently support: {}'.format(mode, self.supported_modes)
+        # Set iterators
+        if mode == 'vanilla':
+            self.phases = [0]
+        elif mode == 'soc':
+            self.phases = [1]
+        else:
+            self.phases = [0, 1, 2]
+        self.phases_iter = iter(self.phases)
+
     def init_trainer(self):
         # if self.args.get_attr:
             # init_manual_attr_dict()
         # TODO: initialize if needed manual list
         pass
 
-    def train(self, mode='mid'):
+    def train(self):
         self.phase = next(self.phases_iter, -1)
         no_progress_cnt = 0
         class_weight = torch.FloatTensor([self.args.negative_weight, 1]).to(self.device)
