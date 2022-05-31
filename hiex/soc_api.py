@@ -265,35 +265,6 @@ class SamplingAndOcclusionExplain:
         sorted_diff_fns_tnps = sorted(fns_word_ratio.items(), key=lambda item: item[1])[::-1]
         sorted_diff_fps_tnps = sorted(fps_word_ratio.items(), key=lambda item: item[1])[::-1]
 
-        '''
-        word_ratio_diff_fns_tnps = dict()
-        for w in fns_word_ratio.keys():
-            if w not in tnps_word_ratio:
-                word_ratio_diff_fns_tnps[w] = 1.
-                # continue
-            else:
-                word_ratio_diff_fns_tnps[w] = _get_ratio_diff(fns_word_ratio[w], tnps_word_ratio[w], normalized)
-        sorted_diff_fns_tnps = sorted(word_ratio_diff_fns_tnps.items(), key=lambda item: item[1])[::-1]
-
-        word_ratio_diff_fps_tnps = dict()
-        for w in fps_word_ratio.keys():
-            if w not in tnps_word_ratio:
-                word_ratio_diff_fps_tnps[w] = 1.
-                # continue
-            else:
-                word_ratio_diff_fps_tnps[w] = _get_ratio_diff(fps_word_ratio[w], tnps_word_ratio[w], normalized)
-        sorted_diff_fps_tnps = sorted(word_ratio_diff_fps_tnps.items(), key=lambda item: item[1])[::-1]
-        '''
-
-        # if verbose:
-            # target_words = ['white', 'black', 'jew', 'muslims', 'jews', 'islam']
-            # new_words = ['blacks', 'whites', 'muslim', 'women', 'obama']
-            # plot_top_words(sorted_diff_fns_tnps, 30, self.tokenizer, target_words + new_words, [], title='False negative')
-            # plot_top_words(sorted_diff_fps_tnps, 30, self.tokenizer, target_words + new_words, [], title='False positive')
-            # plt.show()
-            # for wid, fpp in sorted_diff_fps_tnps[:30]:
-            #     logger.info('{:<12}: {}'.format(self.tokenizer.ids_to_tokens[wid], fpp))
-
         if allow_change:
             new_suppress_words_ids = []
             cnt = 0

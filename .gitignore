@@ -3,3 +3,4 @@ env
 runs
 **__pycache__
 .idea
+notebook

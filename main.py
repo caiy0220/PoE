@@ -456,8 +456,8 @@ def main():
                             param_group['lr'] = lr_this_step
                     optimizer.step()
                     optimizer.zero_grad()
-                    global_step += 1
-                    step_in_phase += 1
+                global_step += 1
+                step_in_phase += 1
 
                 if global_step % args.reg_steps == 0:
                     logger.info('***** Steps already made: {} *****'.format(global_step))
