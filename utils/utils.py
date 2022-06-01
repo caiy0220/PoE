@@ -1,4 +1,5 @@
 from collections import OrderedDict
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 
 
 def load_word_from_file(pth):
@@ -29,11 +30,29 @@ def get_explanation(soc, x_region, input_ids, input_mask, segment_ids):
     return score
 
 
-def find_positions(all_inputs, attr_obj, key='test'):
+def find_positions(all_inputs, attr_obj):
     positions = (all_inputs == attr_obj.id).nonzero(as_tuple=False)
     for pos in positions:
-        if key == 'test':
-            attr_obj.update_test_dict(pos[0].item(), pos[1].item())
+        attr_obj.update_test_dict(pos[0].item(), pos[1].item())
+
+
+def compute_metrics(preds, labels, pred_probs):
+    assert len(preds) == len(labels), \
+        'Unmatched length between predictions [{}] and ground truth [{}]'.format(len(preds), len(labels))
+    return acc_and_f1(preds, labels, pred_probs)
+
+
+def acc_and_f1(preds, labels, pred_probs):
+    acc = accuracy_score(labels, preds)
+    f1 = f1_score(y_true=labels, y_pred=preds)
+    p, r = precision_score(y_true=labels, y_pred=preds), recall_score(y_true=labels, y_pred=preds)
+    try:
+        roc = roc_auc_score(y_true=labels, y_score=pred_probs[:, 1])
+    except ValueError:
+        roc = 0.
+    return {
+        "acc": acc, "f1": f1, "precision": p, "recall": r, "auc_roc": roc
+    }
 
 
 class AttrRecord:
