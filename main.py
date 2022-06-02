@@ -302,8 +302,8 @@ def main():
         logger.info('\tFading rate:      \t{}'.format(args.suppress_fading))
         logger.info('\tAmplifying rate:  \t{}'.format(args.suppress_increasing))
 
-    logger.info('\tSuppress lazy:    \t{}'.format(args.suppress_lazy))
-    logger.info('\tFitlering thresh: \t{}'.format(args.filtering_thresh))
+    logger.info('\tMode:             \t{}'.format(args.mode))
+    logger.info('\tFitlering thresh: \t{}'.format(args.eta))
 
     # if args.reg_explanations:
     """
@@ -609,7 +609,7 @@ def update_suppress_list(args, model, processor, tokenizer, output_mode, label_l
             wrong_li[j] += [input_batch[j][idx] for idx in idx_li]
             right_li[j] += [input_batch[j][idx] for idx in idx_all if idx not in idx_li]
 
-    if args.suppress_lazy:
+    if args.mode == 'mid':
         stats_li = explainer.update_suppress_words_lazy([wrong_li[0], wrong_li[-1]], [right_li[0], right_li[-1]], verbose=verbose, allow_change=allow_change)
         if args.get_attr:
             update_fpr(stats_li, steps, *attr_dicts)

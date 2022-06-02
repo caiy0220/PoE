@@ -94,8 +94,10 @@ class SamplingAndOcclusionExplain:
         # else:
         #     # self.mode = 1  # debugging mode by suppressing over-sensitive terms in targeted class
         try:
-            self.neg_suppress_words, self.neg_suppress_words_ids = self._loading_words(configs.neg_suppress_file)
-            self.pos_suppress_words, self.pos_suppress_words_ids = self._loading_words(configs.pos_suppress_file)
+            # self.neg_suppress_words, self.neg_suppress_words_ids = self._loading_words(configs.neg_suppress_file)
+            # self.neg_suppress_words, self.neg_suppress_words_ids = self._loading_words(configs.neg_suppress_file)
+            self.pos_suppress_words, self.pos_suppress_words_ids = self._loading_words()
+            self.pos_suppress_words, self.pos_suppress_words_ids = self._loading_words()
             # self.neutral_words = []
             # self.neutral_words_ids = []
         except AttributeError:
@@ -107,7 +109,7 @@ class SamplingAndOcclusionExplain:
 
         self.stop_words, self.stop_words_ids = self._get_stop_words()
         self.count_thresh = 10
-        self.filtering_thresh = configs.filtering_thresh
+        self.filtering_thresh = configs.eta
         self.word_appear_records = dict()
         self.window_size = configs.window_size
         self.window_count = self.window_size * configs.ratio_in_window

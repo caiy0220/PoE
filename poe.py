@@ -128,7 +128,6 @@ class MiD:
             self.phases = [1]
         else:
             self.phases = [0, 1, 2]
-            self.args.enable_mid = False
         self.phases_iter = iter(self.phases)
         return mode
 
@@ -299,7 +298,7 @@ class MiD:
                 wrong_li[j] += [batch[j][idx] for idx in idxs_wrong]
                 right_li[j] += [batch[j][idx] for idx in idxs_all if idx not in idxs_wrong]
 
-        if self.args.suppress_lazy:
+        if self.args.mode == 'mid':
             # the most updated version
             # TODO: 3. separate the process of extracting the FPR, should be done by the detector
             stats_li = self.explainer.update_suppress_words_lazy(
@@ -339,7 +338,6 @@ class MiD:
         Update the suppressing list only during vanilla stage under 'mid' mode
         """
         if self._mode == 'mid' and self.phase == 0:
-            # self.args.enable_mid
             filtering = set()
             for w in new_ws:
                 avg_attr = np.mean(next(iter(attr_dict[w].attr_chagnes.values())))
@@ -398,14 +396,17 @@ class MiD:
             tmp_eval_loss = loss_fct(logits.view(-1, self.num_labels), batch[-1].view(-1))
             eval_loss += tmp_eval_loss.mean().item()
 
-            if self.args.reg_explanations:
+            # if self.args.reg_explanations:
+            if self._mode == 'mid':     # TODO: 3. distinguish different mode inside
                 with torch.no_grad():
-                    if self._mode == 'mid':
-                        reg_loss, reg_cnt = self.explainer.suppress_explanation_loss(*batch, do_backprop=False)
-                    else:
-                        reg_loss, reg_cnt = self.explainer.compute_explanation_loss(*batch, do_backprop=False)
-                eval_loss_reg += reg_loss
-                eval_reg_cnt += reg_cnt
+                    reg_loss, reg_cnt = self.explainer.suppress_explanation_loss(*batch, do_backprop=False)
+            elif self._mode == 'soc':
+                with torch.no_grad():
+                    reg_loss, reg_cnt = self.explainer.compute_explanation_loss(*batch, do_backprop=False)
+            else:
+                reg_loss, reg_cnt = 0, 0
+            eval_loss_reg += reg_loss
+            eval_reg_cnt += reg_cnt
             nb_eval_steps += 1
             if len(preds) == 0:
                 preds.append(logits.detach().cpu().numpy())
