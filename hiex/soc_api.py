@@ -84,24 +84,24 @@ class SamplingAndOcclusionExplain:
             self.configs.suppress_fading = 0.    # remove the word from the list immediately after the balance
             self.configs.suppress_increasing = 1.    # do not amplify the weight
 
-        if configs.neutral_words_file != '':
+        # if configs.neutral_words_file != '':
             # self.mode = 0  # debiasing mode
-            self.neutral_words, self.neutral_words_ids = self._loading_words(configs.neutral_words_file)
-            self.neg_suppress_words = []
-            self.neg_suppress_words_ids = []
-            self.pos_suppress_words = []
-            self.pos_suppress_words_ids = []
-        else:
-            # self.mode = 1  # debugging mode by suppressing over-sensitive terms in targeted class
-            try:
-                self.neg_suppress_words, self.neg_suppress_words_ids = self._loading_words(configs.neg_suppress_file)
-                self.pos_suppress_words, self.pos_suppress_words_ids = self._loading_words(configs.pos_suppress_file)
-                # self.neutral_words = []
-                # self.neutral_words_ids = []
-            except AttributeError:
-                logger.warning('***** Features not exist in given configs, might be using an older version of model *****')
-                self.neg_suppress_words, self.neg_suppress_words_ids = dict(), dict()
-                self.pos_suppress_words, self.pos_suppress_words_ids = dict(), dict()
+        self.neutral_words, self.neutral_words_ids = self._loading_words(configs.neutral_words_file)
+        #     self.neg_suppress_words = []
+        #     self.neg_suppress_words_ids = []
+        #     self.pos_suppress_words = []
+        #     self.pos_suppress_words_ids = []
+        # else:
+        #     # self.mode = 1  # debugging mode by suppressing over-sensitive terms in targeted class
+        try:
+            self.neg_suppress_words, self.neg_suppress_words_ids = self._loading_words(configs.neg_suppress_file)
+            self.pos_suppress_words, self.pos_suppress_words_ids = self._loading_words(configs.pos_suppress_file)
+            # self.neutral_words = []
+            # self.neutral_words_ids = []
+        except AttributeError:
+            logger.warning('***** Features not exist in given configs, might be using an older version of model *****')
+            self.neg_suppress_words, self.neg_suppress_words_ids = dict(), dict()
+            self.pos_suppress_words, self.pos_suppress_words_ids = dict(), dict()
 
         self.word_count_dict = dict()
 

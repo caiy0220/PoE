@@ -4,10 +4,11 @@ import os
 import utils.utils as my_utils
 from tqdm import tqdm
 from textwrap import fill
+import time
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, TensorDataset
+from torch.utils.data import DataLoader, RandomSampler, TensorDataset, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
 
 from torch import nn
@@ -15,15 +16,13 @@ from torch import nn
 import random
 import json
 import pickle
-from bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE, WEIGHTS_NAME, CONFIG_NAME, PHASE_NAMES
-from bert.modeling import BertForSequenceClassification, BertConfig
-from bert.tokenization import BertTokenizer
-from bert.optimization import BertAdam, WarmupLinearSchedule
 
-from loader import GabProcessor, WSProcessor, NytProcessor, convert_examples_to_features
-
-# for hierarchical explanation algorithms
-from hiex import SamplingAndOcclusionExplain
+# from bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE, WEIGHTS_NAME, CONFIG_NAME, PHASE_NAMES
+# from bert.modeling import BertForSequenceClassification, BertConfig
+# from bert.tokenization import BertTokenizer
+# from bert.optimization import BertAdam, WarmupLinearSchedule
+# from loader import GabProcessor, WSProcessor, NytProcessor, convert_examples_to_features
+# from hiex import SamplingAndOcclusionExplain
 
 MAX_LINE_WIDTH = 80
 
@@ -40,13 +39,16 @@ def unpack_features(fs, output_mode='classification'):
     return input_ids, input_mask, segment_ids, label_ids
 
 
-def get_dataloader(ds, args):
+def get_dataloader(ds, args, train=True):
     data = TensorDataset(*ds)
     if args.local_rank == -1:
         sampler = RandomSampler(data)
     else:
         sampler = DistributedSampler(data)
-    dl = DataLoader(data, sampler=sampler, batch_size=args.train_batch_size)
+    # if not train:
+    #     sampler = SequentialSampler(data)
+    size = args.train_batch_size if train else args.eval_batch_size
+    dl = DataLoader(data, sampler=sampler, batch_size=size)
     return dl
 
 
@@ -72,8 +74,8 @@ def update_fpp_dict(attr_dict, stats_li, steps):
         attr_obj = attr_dict[w]
         w_id = attr_obj.id
         fpp = fpp_dict[w_id] if w_id in fpp_dict else 0.
-        tnpp = tnpp_dict [w_id] if w_id in tnpp_dict else 0.
-        fnp = fnp_dict [w_id] if w_id in fnp_dict else 0.
+        tnpp = tnpp_dict[w_id] if w_id in tnpp_dict else 0.
+        fnp = fnp_dict[w_id] if w_id in fnp_dict else 0.
         attr_obj.fpr_changes[steps] = [fpp, tnpp, fnp]
 
 
@@ -81,26 +83,22 @@ class MiD:
     def __init__(self, args, device):
         self.args = args
         self.supported_modes = ['vanilla', 'mid', 'soc']
-        self._mode = 'mid'
+        self._mode = self.set_training_mode()
         self.device = device
         self.phases, self.phases_iter, self.phase = [], None, -1
 
         self.global_step, self.step_in_phase, self.num_labels = 0, 0, 0
         self.losses, self.reg_losses = [], []
         self.suppress_records = [[], []]
-        self.attr_change_dict, self.manual_change_dict = dict(), dict()     # dict of AttrRecord
+        self.attr_change_dict, self.manual_change_dict = dict(), dict()  # dict of AttrRecord
 
         self.explainer, self.model, self.optimizer = None, None, None
         self.logger, self.tokenizer, self.processor = None, None, None
-        self.ds_train, self.ds_eval = None, None    # ids, mask, segment_ids, label
+        self.ds_train, self.ds_eval = None, None  # ids, mask, segment_ids, label
         self.dl_train, self.dl_eval = None, None
 
         class_weight = torch.FloatTensor([self.args.negative_weight, 1]).to(self.device)
         self.loss_fct = nn.CrossEntropyLoss(class_weight)  # FIXME: support different losses
-
-    def _check_setup(self):
-        # TODO: make sure very critical components have been loaded
-        pass
 
     def load_tools(self, tokenizer, processor, logger):
         self.logger = logger
@@ -119,9 +117,10 @@ class MiD:
         self.ds_train = unpack_features(train_features, self.args)
         self.ds_eval = unpack_features(eval_features, self.args)
 
-    def set_training_mode(self, mode):
-        assert mode in self.supported_modes, 'Unknown mode: [{}], currently support: {}'.format(mode, self.supported_modes)
-        self._mode = mode
+    def set_training_mode(self):
+        mode = self.args.mode       # TODO: 0. add param
+        assert mode in self.supported_modes, 'Unknown mode: [{}], currently support: {}'.format(mode,
+                                                                                                self.supported_modes)
         # Set iterators
         if mode == 'vanilla':
             self.phases = [0]
@@ -131,24 +130,31 @@ class MiD:
             self.phases = [0, 1, 2]
             self.args.enable_mid = False
         self.phases_iter = iter(self.phases)
+        return mode
 
     def init_trainer(self):
-        # if self.args.get_attr:
-        #     init_manual_attr_dict()
-        # TODO: initialize if needed manual list
+        """
+        Init the trainer just before the training, such that no information will be omitted
+        """
+        if self.args.get_attr or self._mode:
+            self.init_manual_list()
 
         self.dl_train = get_dataloader(self.ds_train, self.args)
-        self.dl_eval = get_dataloader(self.ds_eval, self.args)
-        pass
+        self.dl_eval = get_dataloader(self.ds_eval, self.args, train=False)
+
+    def init_manual_list(self):
+        ws = self.explainer.neutral_words
+        for w in ws:
+            self.manual_change_dict[w] = my_utils.AttrRecord(w, self.tokenizer.vocab[w])
 
     def train(self):
-        self._check_setup()
+        start_at = time.time()
         self.phase = next(self.phases_iter, -1)
-        no_progress_cnt = 0
-        # add output_mode=='regression' in case needed
+        no_progress_cnt, val_best_f1 = 0, -1
+        val_best_results, val_phase_names = [], []
+        val_best = None
 
-        for epoch in range(int(self.args.num_train_epochs)):
-            self.logger.info('***** Epoch {} *****'.format(epoch))
+        while self.phase >= 0:
             tr_loss = 0
             for step, batch in enumerate(tqdm(self.dl_train, desc='Batches')):
                 if self.phase < 0:
@@ -160,10 +166,10 @@ class MiD:
                 ''' |                 Cross entropy loss               | '''
                 ''' ==================================================== '''
                 # define a new function to compute loss values for both output_modes
-                logits = self.model(batch[0], batch[2], batch[1])   # be careful with the order
+                logits = self.model(batch[0], batch[2], batch[1])  # be careful with the order
 
                 # Update loss in case n_gpu/gradient_accumulation is set
-                # TODO: check this, defined before actual training starts
+                # TODO: 6. check this, defined before actual training starts
                 loss = self.loss_fct(logits.view(-1, self.num_labels), batch[-1].view(-1))
 
                 tr_loss += loss.item()
@@ -174,15 +180,18 @@ class MiD:
                 ''' ==================================================== '''
                 if self.phase == 1:
                     # Note that the backpropagation happens within the function
-                    # TODO: different suppression strategies
-                    reg_loss, _ = self.explainer.suppress_explanation_loss(*batch, do_backprop=True)
+                    # TODO: 5. different suppression strategies
+                    if self._mode == 'mid':
+                        reg_loss, _ = self.explainer.suppress_explanation_loss(*batch, do_backprop=True)
+                    else:
+                        reg_loss, _ = self.explainer.compute_explanation_loss(*batch, do_backprop=True)
                 else:
                     # Output reg_loss only for recording
                     reg_loss = 0.
                 self.losses.append(loss.item())
                 self.reg_losses.append(loss.item() + reg_loss)
 
-                if (self.global_step + 1) % self.args.gradient_accumulation_steps == 0:     # Batch normalization
+                if (self.global_step + 1) % self.args.gradient_accumulation_steps == 0:  # Batch normalization
                     # FIXME: support FP16 if needed
                     self.optimizer.step()
                     self.optimizer.zero_grad()
@@ -191,55 +200,79 @@ class MiD:
 
                 if self.global_step % self.args.reg_steps == 0:
                     # Update suppressing list, and record the current best version if the constraint satisfies
+                    ''' ==================================================== '''
+                    ''' |          Maintaining the suppression list        | '''
+                    ''' ==================================================== '''
                     self.logger.info('***** Update attribution records at #{} *****'.format(self.global_step))
                     self.update_fpp_window(allow_change=(self.phase == 0))
-                    val_res = self.validate(tr_loss, use_train=self.args.attr_on_training)    # TODO: add the argument
+                    val_res = self.validate(tr_loss, use_train=self.args.attr_on_training)  # TODO: 0. add the argument
 
+                    ''' ==================================================== '''
+                    ''' |            Recording the best version            | '''
+                    ''' ==================================================== '''
                     val_acc, val_f1 = val_res['acc'], val_res['f1']
-                    # TODO: saving best version
-                    # ''' --------------- Recording best and update lr only for val_steps --------------- '''
-                    # if global_step % args.val_steps == 0:
-                    #     logger.info("***** Validation *****")
-                    #     if val_f1 > val_best_f1:
-                    #         val_best_f1 = val_f1
-                    #         if args.local_rank == -1 or torch.distributed.get_rank() == 0:
-                    #             save_model(args, model, tokenizer, num_labels, phase=phase, postfix='_best')
-                    #     else:
-                    #         # # halve the learning rate
-                    #         # if phase != 0 and step_in_phase <= 1000:
-                    #         #     pass
-                    #         # else:
-                    #         for param_group in optimizer.param_groups:
-                    #             param_group['lr'] *= 0.5
-                    #         no_progress_cnt += 1
-                    #         logger.info("Reducing learning rate... No progress count: %d" % no_progress_cnt)
-                    #
-                    #     lr_str = ''
-                    #     for param_group in optimizer.param_groups:
-                    #         lr_str += str(param_group['lr']) + '  '
-                    #     logger.info("Current learning rate: {}".format(lr_str))
-                    #
-                    # if step_in_phase >= args.max_iter > 0:
-                    #     # steps count, move to next phase
-                    #     save_model(args, model, tokenizer, num_labels, phase=phase, postfix='_final')
-                    #     phase = next(phases_iter, -1)
-                    #     logger.info('-'*50)
-                    #     logger.info('|            Move to next phase: {}              |'.format(phase))
-                    #     logger.info('-'*50)
-                    #     # make sure that model from new phase will be recorded
-                    #     for param_group in optimizer.param_groups:
-                    #         param_group['lr'] = args.learning_rate / 2.
-                    #     val_best_f1 = -1
-                    #     no_progress_cnt = 0
-                    #     step_in_phase = 0
-                    #     if phase == 2:
-                    #         args.max_iter += args.extra_iter
+                    if self.global_step % self.args.val_steps == 0:
+                        self.logger.info("***** Validation *****")
+                        if val_f1 > val_best_f1:
+                            val_best_f1 = val_f1
+                            val_best = val_res
+                            if self.args.local_rank == -1 or torch.distributed.get_rank() == 0:
+                                my_utils.save_model(self.args, self.model, self.tokenizer,
+                                                    phase=self.phase, postfix='_best')
+                        else:
+                            # halve the learning rate
+                            for param_group in self.optimizer.param_groups:
+                                param_group['lr'] *= 0.5
+                            no_progress_cnt += 1
+                            self.logger.info("--> Reducing learning rate...")
+                            self.logger.info('--> No progress count: {}'.format(no_progress_cnt))
 
+                        lr_str = ''
+                        for param_group in self.optimizer.param_groups:
+                            lr_str += str(param_group['lr']) + '  '
+                        self.logger.info("Current learning rate: {}".format(lr_str))
+
+                    ''' ==================================================== '''
+                    ''' |           Switching to the next phase            | '''
+                    ''' ==================================================== '''
+                    if self.step_in_phase >= self.args.max_iter > 0:
+                        # Exit phase when criterion satisfies
+                        # TODO: 5. save status everytime a phase ends, for resuming training after disconnection
+                        val_best_results.append(val_best)  # Only for recording
+                        val_phase_names.append(my_utils.PHASE_NAMES[self.phase])
+                        my_utils.save_model(self.args, self.model, self.tokenizer, phase=self.phase, postfix='_final')
+                        self.phase = next(self.phases_iter, -1)
+                        self.logger.info('-' * 50)
+                        self.logger.info('|            Move to next phase: {}              |'.format(self.phase))
+                        self.logger.info('-' * 50)
+
+                        # make sure that model from new phase will be recorded
+                        for param_group in self.optimizer.param_groups:
+                            param_group['lr'] = self.args.learning_rate / 2.
+                        val_best_f1 = -1
+                        no_progress_cnt = 0
+                        self.step_in_phase = 0
+                        if self.phase == 2:
+                            self.args.max_iter += self.args.extra_iter
+        self.logger.info('--> Training complete')
+        time_cost = my_utils.seconds2hms(time.time() - start_at)
+
+        for i, name in val_phase_names:
+            self.logger.info('Best performing model on [{}]'.format(name))
+            result = val_best_results[i]
+            for key in sorted(result.keys()):
+                self.logger.info("\t{} = {:.4f}".format(key, result[key]))
+        self.logger.info('\n--> Time cost: {}:{}:{}\n'.format(*time_cost))
+
+        suppress_records = self.suppress_records[2:]
+        records = [self.losses, self.reg_losses, suppress_records, self.attr_change_dict, self.manual_change_dict]
+        with open(self.args.stats_file, 'wb') as f:
+            pickle.dump(records, f)
+            self.logger.info('Save to {}'.format(self.args.stats_file))
 
     def update_attr_dict(self):
         new_ws = list(set(self.explainer.get_suppress_words()) - set(self.suppress_records[-1]))
         if self.args.get_attr:
-            # TODO: check whether the actual address is given, experiment
             tmp_change_dict = self.attr_change_dict
         else:
             tmp_change_dict = dict()
@@ -255,7 +288,7 @@ class MiD:
         self.model.train(False)
         eval_dl = self.dl_train if use_train else self.dl_eval
 
-        self.logger.info('\t--> Updating suppressing list')
+        self.logger.info('\t--> Updating suppressing list through FPP')
         self.logger.info('\t\tNum examples = %d', len(eval_dl.dataset))
         wrong_li = [[] for _ in range(4)]
         right_li = [[] for _ in range(4)]
@@ -265,10 +298,10 @@ class MiD:
             for j in range(len(wrong_li)):
                 wrong_li[j] += [batch[j][idx] for idx in idxs_wrong]
                 right_li[j] += [batch[j][idx] for idx in idxs_all if idx not in idxs_wrong]
-        
+
         if self.args.suppress_lazy:
             # the most updated version
-            # TODO: separate the process of extracting the FPR, should be done by the detector
+            # TODO: 3. separate the process of extracting the FPR, should be done by the detector
             stats_li = self.explainer.update_suppress_words_lazy(
                 [wrong_li[0], wrong_li[-1]], [right_li[0], right_li[-1]],
                 verbose=0, allow_change=allow_change)
@@ -319,7 +352,7 @@ class MiD:
             self.logger.info('\t\tFinal check with words that are removed:')
             removed = set(new_ws) - set(self.explainer.get_suppress_words())
             self.logger.info('\t\t{}'.format(fill(str(removed), width=MAX_LINE_WIDTH)))
-            self.logger.info('\t\t', '-'*20)
+            self.logger.info('\t\t', '-' * 20)
 
             self.logger.info('\t\t------- Current Suppressing List --------')
             self.logger.info('\t\t{}'.format(fill(str(self.explainer.neg_suppress_words), width=MAX_LINE_WIDTH)))
@@ -331,50 +364,55 @@ class MiD:
         Validate both the model & the suspicious words
         """
         eval_dl = self.dl_train if use_train else self.dl_eval
-        eval_ds = self.ds_train if use_train else self.ds_train
-        self.logger.info('\t--> Running evaluation')
-        self.logger.info('\t\tNum examples = %d', len(eval_dl.dataset()))
+        eval_ds = self.ds_train if use_train else self.ds_eval
 
         attr_dict, new_ws = self.update_attr_dict()
+
+        self.logger.info('\t--> Verify candidates through SOC')
         self.update_changes_dict(attr_dict, eval_ds)
         self.update_suppressing_list(attr_dict, new_ws)
+
+        self.logger.info('\t--> Running evaluation')
+        self.logger.info('\t\tNum examples = %d', len(eval_dl.dataset))
         return self._validate(eval_dl, tr_loss)
 
     def test(self, tr_loss=0.):
-        # TODO: validate finalized model on test set
+        # TODO: 5. validate finalized model on test set
         pass
 
     def _validate(self, dl, tr_loss=0.):
         self.model.train(False)
         eval_loss, eval_loss_reg = 0, 0
         eval_reg_cnt, nb_eval_steps = 0, 0
-        preds = []
+        preds, ys = [], []
         # for detailed prediction results
         input_seqs = []
+        loss_fct = nn.CrossEntropyLoss()
 
         # for input_ids, input_mask, segment_ids, label_ids in eval_dl:
         for step, batch in enumerate(tqdm(dl, desc='Validate')):
             batch = tuple(t.to(self.device) for t in batch)
 
             with torch.no_grad():
-                logits = self.model(batch[0], batch[2], batch[1], labels=None)   # be careful with the order
-            tmp_eval_loss = self.loss_fct(logits.view(-1, self.num_labels), batch[-1].view(-1))
+                logits = self.model(batch[0], batch[2], batch[1], labels=None)  # be careful with the order
+            tmp_eval_loss = loss_fct(logits.view(-1, self.num_labels), batch[-1].view(-1))
             eval_loss += tmp_eval_loss.mean().item()
 
             if self.args.reg_explanations:
                 with torch.no_grad():
-                    # TODO: handle different situation by the explainer in the future
-                    if self.args.neutral_words_file != '':
-                        reg_loss, reg_cnt = self.explainer.compute_explanation_loss(*batch, backprop=False)
+                    if self._mode == 'mid':
+                        reg_loss, reg_cnt = self.explainer.suppress_explanation_loss(*batch, do_backprop=False)
                     else:
-                        reg_loss, reg_cnt = self.explainer.suppress_explanation_loss(*batch, backprop=False)
+                        reg_loss, reg_cnt = self.explainer.compute_explanation_loss(*batch, do_backprop=False)
                 eval_loss_reg += reg_loss
                 eval_reg_cnt += reg_cnt
             nb_eval_steps += 1
             if len(preds) == 0:
                 preds.append(logits.detach().cpu().numpy())
+                ys.append(batch[-1].detach().cpu().numpy())
             else:
                 preds[0] = np.append(preds[0], logits.detach().cpu().numpy(), axis=0)
+                ys[0] = np.append(ys[0], batch[-1].detach().cpu().numpy(), axis=0)
 
             for b in range(batch[0].size(0)):
                 i = 0
@@ -386,11 +424,10 @@ class MiD:
         eval_loss = eval_loss / nb_eval_steps
         eval_loss_reg = eval_loss_reg / (eval_reg_cnt + 1e-10)
         preds = preds[0]
-        pred_labels = np.argmax(preds, axis=1)      # FIXME: Currently, only support classification
+        pred_labels = np.argmax(preds, axis=1)  # FIXME: Currently, only support classification
         pred_prob = nn.functional.softmax(torch.from_numpy(preds).float(), -1).numpy()
         # result = my_utils.compute_metrics(pred_labels, all_label_ids.numpy(), pred_prob)
-        # TODO: test this
-        result = my_utils.compute_metrics(pred_labels, dl.dataset()[-1].numpy(), pred_prob)
+        result = my_utils.compute_metrics(pred_labels, ys.numpy(), pred_prob)
         loss = tr_loss / (self.global_step + 1e-10) if self.args.do_train else None
 
         result['eval_loss'] = eval_loss
@@ -414,7 +451,7 @@ class MiD:
         with open(output_detail_file, 'w') as writer:
             for i, seq in enumerate(input_seqs):
                 pred = preds[i]
-                gt = dl.dataset()[-1][i]
+                gt = ys[i]
                 writer.write('{}\t{}\t{}\n'.format(gt, pred, seq))
 
         self.model.train(True)
