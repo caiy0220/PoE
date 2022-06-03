@@ -3,6 +3,7 @@ bert_model: bert-base-uncased
 do_lower_case: true
 lm_d_embed: 300
 lm_d_hidden: 300
+batch_size: 1
 lm_dir: runs/lm
 lm_model_dir: runs/lm_model_uncased.pkl
 remove_nw: false

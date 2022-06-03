@@ -31,7 +31,7 @@ no_cuda: false
 # Balancing classes
 negative_weight: 0.1
 
-# ------ For distributed training or lower precision ------
+# ------ Advanced training setting, like batch normalization, distribution setting... ------
 gradient_accumulation_steps: 1
 fp16: false
 loss_scale: 0

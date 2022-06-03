@@ -96,8 +96,8 @@ class SamplingAndOcclusionExplain:
         try:
             # self.neg_suppress_words, self.neg_suppress_words_ids = self._loading_words(configs.neg_suppress_file)
             # self.neg_suppress_words, self.neg_suppress_words_ids = self._loading_words(configs.neg_suppress_file)
-            self.pos_suppress_words, self.pos_suppress_words_ids = self._loading_words()
-            self.pos_suppress_words, self.pos_suppress_words_ids = self._loading_words()
+            self.pos_suppress_words, self.pos_suppress_words_ids = self._loading_words('')
+            self.pos_suppress_words, self.pos_suppress_words_ids = self._loading_words('')
             # self.neutral_words = []
             # self.neutral_words_ids = []
         except AttributeError:
