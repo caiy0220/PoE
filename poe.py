@@ -5,17 +5,13 @@ import utils.utils as my_utils
 from tqdm import tqdm
 from textwrap import fill
 import time
+import pickle
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, RandomSampler, TensorDataset, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
-
 from torch import nn
-
-import random
-import json
-import pickle
 
 # from bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE, WEIGHTS_NAME, CONFIG_NAME, PHASE_NAMES
 # from bert.modeling import BertForSequenceClassification, BertConfig
