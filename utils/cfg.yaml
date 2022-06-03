@@ -1,0 +1,63 @@
+# ------ General switches ------
+mode: mid
+do_eval: false
+do_train: true
+explain: false
+seed: 0
+#test: false  # consider to have separate setting file for testing
+
+# ------ MiD settings ------
+eta: 0.45           # threshold for FPP
+tau: 0.65           # threshold for Attr
+get_attr: true      # for experiments
+reg_steps: 200      # period of checking FPP
+val_steps: 200      # period of checking best performing models
+reg_strength: 0.1   # lambda
+window_size: 10
+ratio_in_window: 0.65
+
+# ------ Hyper-parameters for training ------
+learning_rate: 2.0e-05
+# Less important
+train_batch_size: 32
+eval_batch_size: 32
+max_iter: 2000  # for each phase
+max_seq_length: 128
+early_stop: 5
+extra_iter: 0   # extra iter to go in stabilization
+warmup_proportion: 0.1
+no_cuda: false
+
+# Balancing classes
+negative_weight: 0.1
+
+# ------ Advanced training setting, like batch normalization, distribution setting... ------
+gradient_accumulation_steps: 1
+fp16: false
+loss_scale: 0
+local_rank: -1
+server_ip: ''
+server_port: ''
+
+# ------ Data path, Loading & Storage ------
+data_dir: ./data/majority_gab_dataset_25k/  # data path
+stats_file: lazy_suppress_0.pkl   # details: losses, FA/FPP changes
+cache_dir: ''
+output_dir: runs/majority_seed_1  # model storage
+output_filename: temp.tmp   # explanation storage
+
+# Dynamic suppression, currently not used
+suppress_weighted: false
+suppress_fading: 0.0
+suppress_higher_thresh: 2.0
+suppress_lower_thresh: 0.5
+suppress_increasing: 1.0
+#suppress_lazy: true
+
+# ------ To be removed ------
+#num_train_epochs: 20.0
+#only_negative: false
+#only_positive: false
+#reg_explanations: true   replaced by mode
+#reg_mse: false
+#stop: 100000000

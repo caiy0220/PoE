@@ -205,6 +205,7 @@ def add_training_configs(parser, **kwargs):
     training_params.add_argument("--early_stop", default=5, type=int)
     # If max iter is set to be positive, early_stop will be over writen
     training_params.add_argument("--max_iter", default=-1, type=int)
+    training_params.add_argument("--extra_iter", default=-1, type=int)
     # epochs to go
     training_params.add_argument("--num_train_epochs", default=3.0, type=float,
                                  help="Total number of training epochs to perform.")

@@ -1,4 +1,12 @@
 from collections import OrderedDict
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+import os
+import torch
+import json
+
+CONFIG_NAME = "config.json"     # TODO: do multiple config to separate model from framework
+WEIGHTS_NAME = "pytorch_model.bin"
+PHASE_NAMES = ['normal', 'correcting', 'stabilizing']
 
 
 def load_word_from_file(pth):
@@ -29,11 +37,29 @@ def get_explanation(soc, x_region, input_ids, input_mask, segment_ids):
     return score
 
 
-def find_positions(all_inputs, attr_obj, key='test'):
+def find_positions(all_inputs, attr_obj):
     positions = (all_inputs == attr_obj.id).nonzero(as_tuple=False)
     for pos in positions:
-        if key == 'test':
-            attr_obj.update_test_dict(pos[0].item(), pos[1].item())
+        attr_obj.update_test_dict(pos[0].item(), pos[1].item())
+
+
+def compute_metrics(preds, labels, pred_probs):
+    assert len(preds) == len(labels), \
+        'Unmatched length between predictions [{}] and ground truth [{}]'.format(len(preds), len(labels))
+    return acc_and_f1(preds, labels, pred_probs)
+
+
+def acc_and_f1(preds, labels, pred_probs):
+    acc = accuracy_score(labels, preds)
+    f1 = f1_score(y_true=labels, y_pred=preds)
+    p, r = precision_score(y_true=labels, y_pred=preds), recall_score(y_true=labels, y_pred=preds)
+    try:
+        roc = roc_auc_score(y_true=labels, y_score=pred_probs[:, 1])
+    except ValueError:
+        roc = 0.
+    return {
+        "acc": acc, "f1": f1, "precision": p, "recall": r, "auc_roc": roc
+    }
 
 
 class AttrRecord:
@@ -87,3 +113,35 @@ class AttrRecord:
         epoch_li = [epoch for epoch in self.attr_changes.keys()]
         attr_li = [self.attr_changes[epoch] for epoch in epoch_li]
         return epoch_li, attr_li
+
+
+def save_model(args, model, tokenizer, phase=None, postfix=None):
+    # Save a trained model, configuration and tokenizer
+    model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
+
+    # If we save using the predefined names, we can load using `from_pretrained`
+    if phase is None:
+        output_model_file = os.path.join(args.output_dir, WEIGHTS_NAME)
+        output_config_file = os.path.join(args.output_dir, CONFIG_NAME)
+        target_dir = args.output_dir
+    else:
+        target_dir = args.output_dir + '_' + PHASE_NAMES[phase] + postfix
+        output_model_file = os.path.join(target_dir, WEIGHTS_NAME)
+        output_config_file = os.path.join(target_dir, CONFIG_NAME)
+        if not os.path.exists(target_dir):
+            os.makedirs(target_dir)
+
+    torch.save(model_to_save.state_dict(), output_model_file)
+    model_to_save.config.to_json_file(output_config_file)
+    tokenizer.save_vocabulary(target_dir)
+    if args.do_train:
+        f = open(os.path.join(target_dir, 'args.json'), 'w')
+        json.dump(args.__dict__, f, indent=4)
+        f.close()
+
+
+def seconds2hms(s):
+    h = s//3600
+    m = (s % 3600) // 60
+    s = s % 60
+    return h, m, s

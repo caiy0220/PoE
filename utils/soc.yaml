@@ -1,0 +1,12 @@
+# ------ SOC settings ------
+neutral_words_file: data/identity.csv
+hiex: false
+hiex_abs: false
+hiex_add_itself: true
+hiex_tree_height: 5
+mask_outside_nb: false
+keep_other_nw: true
+nb_range: 5
+sample_n: 5
+use_padding_variant: false
+reg_balanced: false

@@ -84,30 +84,32 @@ class SamplingAndOcclusionExplain:
             self.configs.suppress_fading = 0.    # remove the word from the list immediately after the balance
             self.configs.suppress_increasing = 1.    # do not amplify the weight
 
-        if configs.neutral_words_file != '':
+        # if configs.neutral_words_file != '':
             # self.mode = 0  # debiasing mode
-            self.neutral_words, self.neutral_words_ids = self._loading_words(configs.neutral_words_file)
-            self.neg_suppress_words = []
-            self.neg_suppress_words_ids = []
-            self.pos_suppress_words = []
-            self.pos_suppress_words_ids = []
-        else:
-            # self.mode = 1  # debugging mode by suppressing over-sensitive terms in targeted class
-            try:
-                self.neg_suppress_words, self.neg_suppress_words_ids = self._loading_words(configs.neg_suppress_file)
-                self.pos_suppress_words, self.pos_suppress_words_ids = self._loading_words(configs.pos_suppress_file)
-                # self.neutral_words = []
-                # self.neutral_words_ids = []
-            except AttributeError:
-                logger.warning('***** Features not exist in given configs, might be using an older version of model *****')
-                self.neg_suppress_words, self.neg_suppress_words_ids = dict(), dict()
-                self.pos_suppress_words, self.pos_suppress_words_ids = dict(), dict()
+        self.neutral_words, self.neutral_words_ids = self._loading_words(configs.neutral_words_file)
+        #     self.neg_suppress_words = []
+        #     self.neg_suppress_words_ids = []
+        #     self.pos_suppress_words = []
+        #     self.pos_suppress_words_ids = []
+        # else:
+        #     # self.mode = 1  # debugging mode by suppressing over-sensitive terms in targeted class
+        try:
+            # self.neg_suppress_words, self.neg_suppress_words_ids = self._loading_words(configs.neg_suppress_file)
+            # self.neg_suppress_words, self.neg_suppress_words_ids = self._loading_words(configs.neg_suppress_file)
+            self.pos_suppress_words, self.pos_suppress_words_ids = self._loading_words('')
+            self.pos_suppress_words, self.pos_suppress_words_ids = self._loading_words('')
+            # self.neutral_words = []
+            # self.neutral_words_ids = []
+        except AttributeError:
+            logger.warning('***** Features not exist in given configs, might be using an older version of model *****')
+            self.neg_suppress_words, self.neg_suppress_words_ids = dict(), dict()
+            self.pos_suppress_words, self.pos_suppress_words_ids = dict(), dict()
 
         self.word_count_dict = dict()
 
         self.stop_words, self.stop_words_ids = self._get_stop_words()
         self.count_thresh = 10
-        self.filtering_thresh = configs.filtering_thresh
+        self.filtering_thresh = configs.eta
         self.word_appear_records = dict()
         self.window_size = configs.window_size
         self.window_count = self.window_size * configs.ratio_in_window
@@ -264,35 +266,6 @@ class SamplingAndOcclusionExplain:
         tnps_word_ratio = _fpp(tnps_word_count, self.word_count_dict)
         sorted_diff_fns_tnps = sorted(fns_word_ratio.items(), key=lambda item: item[1])[::-1]
         sorted_diff_fps_tnps = sorted(fps_word_ratio.items(), key=lambda item: item[1])[::-1]
-
-        '''
-        word_ratio_diff_fns_tnps = dict()
-        for w in fns_word_ratio.keys():
-            if w not in tnps_word_ratio:
-                word_ratio_diff_fns_tnps[w] = 1.
-                # continue
-            else:
-                word_ratio_diff_fns_tnps[w] = _get_ratio_diff(fns_word_ratio[w], tnps_word_ratio[w], normalized)
-        sorted_diff_fns_tnps = sorted(word_ratio_diff_fns_tnps.items(), key=lambda item: item[1])[::-1]
-
-        word_ratio_diff_fps_tnps = dict()
-        for w in fps_word_ratio.keys():
-            if w not in tnps_word_ratio:
-                word_ratio_diff_fps_tnps[w] = 1.
-                # continue
-            else:
-                word_ratio_diff_fps_tnps[w] = _get_ratio_diff(fps_word_ratio[w], tnps_word_ratio[w], normalized)
-        sorted_diff_fps_tnps = sorted(word_ratio_diff_fps_tnps.items(), key=lambda item: item[1])[::-1]
-        '''
-
-        # if verbose:
-            # target_words = ['white', 'black', 'jew', 'muslims', 'jews', 'islam']
-            # new_words = ['blacks', 'whites', 'muslim', 'women', 'obama']
-            # plot_top_words(sorted_diff_fns_tnps, 30, self.tokenizer, target_words + new_words, [], title='False negative')
-            # plot_top_words(sorted_diff_fps_tnps, 30, self.tokenizer, target_words + new_words, [], title='False positive')
-            # plt.show()
-            # for wid, fpp in sorted_diff_fps_tnps[:30]:
-            #     logger.info('{:<12}: {}'.format(self.tokenizer.ids_to_tokens[wid], fpp))
 
         if allow_change:
             new_suppress_words_ids = []
