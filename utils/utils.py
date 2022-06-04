@@ -9,6 +9,7 @@ import yaml
 CONFIG_NAME = "config.json"     # TODO: do multiple config to separate model from framework
 WEIGHTS_NAME = "pytorch_model.bin"
 PHASE_NAMES = ['normal', 'correcting', 'stabilizing']
+MAX_LINE_WIDTH = 80
 
 
 def load_config(pth):

@@ -5,6 +5,7 @@ import os
 import random
 import utils.utils as my_utils
 import argparse
+from textwrap import fill
 # import pickle
 
 import numpy as np
@@ -21,6 +22,20 @@ from loader import GabProcessor, WSProcessor, NytProcessor
 
 from hiex import SamplingAndOcclusionExplain
 from poe import MiD
+
+# TODO: message string at the beginning
+# TODO: terminal control of parser
+# TODO: nested tqdm
+
+
+try:
+    from pathlib import Path
+    PYTORCH_PRETRAINED_BERT_CACHE = Path(os.getenv('PYTORCH_PRETRAINED_BERT_CACHE',
+                                                   Path.home() / '.pytorch_pretrained_bert'))
+except (AttributeError, ImportError):
+    PYTORCH_PRETRAINED_BERT_CACHE = os.getenv('PYTORCH_PRETRAINED_BERT_CACHE',
+                                              os.path.join(os.path.expanduser("~"), '.pytorch_pretrained_bert'))
+
 
 logger = logging.getLogger(__name__)
 
@@ -101,9 +116,8 @@ def main(args):
     tokenizer, processor = get_processors(args)
     label_list = processor.get_labels()
     num_labels = len(label_list)
-    model = BertForSequenceClassification.from_pretrained('notebook/corrected',
-                                                          cache_dir=args.cache_dir,
-                                                          num_labels=num_labels)
+    cache_dir = args.cache_dir if args.cache_dir else os.path.join(str(PYTORCH_PRETRAINED_BERT_CACHE), 'distributed_{}'.format(args.local_rank))
+    model = BertForSequenceClassification.from_pretrained(args.bert_model, cache_dir=cache_dir, num_labels=num_labels)
     model = model.to('cuda')
     optimizer = get_optimizer(args, model)
 
@@ -119,6 +133,7 @@ def main(args):
     train_features, train_examples = my_utils.load_text_as_feature(args, processor, tokenizer, 'train')
     eval_features, eval_examples = my_utils.load_text_as_feature(args, processor, tokenizer, 'eval')
 
+    explainer.get_global_words_count(np.array([f.input_ids for f in train_features], dtype=np.int64))    # Preparation for FPP
 
     """ 
     ------------------------------------------------------------
@@ -148,6 +163,10 @@ if __name__ == '__main__':
                         datefmt='%m/%d/%Y %H:%M:%S',
                         level=logging.INFO if _args.local_rank in [-1, 0] else logging.WARN)
     logger.info('Current version of main: 0.000.213')
+
+    logger.info('='*my_utils.MAX_LINE_WIDTH)
+    logger.info('{}'.format(fill(_args.__str__()), width=my_utils.MAX_LINE_WIDTH))
+    logger.info('='*my_utils.MAX_LINE_WIDTH)
 
     main(_args)
 

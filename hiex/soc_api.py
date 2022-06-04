@@ -91,8 +91,8 @@ class SamplingAndOcclusionExplain:
         # else:
         #     # self.mode = 1  # debugging mode by suppressing over-sensitive terms in targeted class
         try:
-            # self.neg_suppress_words, self.neg_suppress_words_ids = self._loading_words(configs.neg_suppress_file)
-            # self.neg_suppress_words, self.neg_suppress_words_ids = self._loading_words(configs.neg_suppress_file)
+            self.neg_suppress_words, self.neg_suppress_words_ids = self._loading_words('')
+            self.neg_suppress_words, self.neg_suppress_words_ids = self._loading_words('')
             self.pos_suppress_words, self.pos_suppress_words_ids = self._loading_words('')
             self.pos_suppress_words, self.pos_suppress_words_ids = self._loading_words('')
             # self.neutral_words = []
@@ -244,8 +244,6 @@ class SamplingAndOcclusionExplain:
                 tns.append(right_li[0][idx].numpy().tolist())
 
         tnps = tns + tps
-
-        normalized = True
 
         fns_word_count_li, fns_word_num_total = self._words_count(fns)
         fps_word_count_li, fps_word_num_total = self._words_count(fps)

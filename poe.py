@@ -20,8 +20,6 @@ from torch import nn
 # from loader import GabProcessor, WSProcessor, NytProcessor, convert_examples_to_features
 # from hiex import SamplingAndOcclusionExplain
 
-MAX_LINE_WIDTH = 80
-
 
 def unpack_features(fs, output_mode='classification'):
     input_ids = torch.tensor(np.array([f.input_ids for f in fs]), dtype=torch.long)
@@ -79,9 +77,9 @@ class MiD:
     def __init__(self, args, device):
         self.args = args
         self.supported_modes = ['vanilla', 'mid', 'soc']
+        self.phases, self.phases_iter, self.phase = [], None, -1
         self._mode = self.set_training_mode()
         self.device = device
-        self.phases, self.phases_iter, self.phase = [], None, -1
 
         self.global_step, self.step_in_phase, self.num_labels = 0, 0, 0
         self.losses, self.reg_losses = [], []
@@ -114,7 +112,7 @@ class MiD:
         self.ds_eval = unpack_features(eval_features, self.args)
 
     def set_training_mode(self):
-        mode = self.args.mode       # TODO: 0. add param
+        mode = self.args.mode
         assert mode in self.supported_modes, 'Unknown mode: [{}], only support: {}'.format(mode, self.supported_modes)
         # Set iterators
         if mode == 'vanilla':
@@ -202,7 +200,7 @@ class MiD:
                     ''' ==================================================== '''
                     self.logger.info('***** Update attribution records at #{} *****'.format(self.global_step))
                     self.update_fpp_window(allow_change=(self.phase == 0))
-                    val_res = self.validate(tr_loss, use_train=self.args.attr_on_training)  # TODO: 0. add the argument
+                    val_res = self.validate(tr_loss, use_train=self.args.attr_on_training)
 
                     ''' ==================================================== '''
                     ''' |            Recording the best version            | '''
@@ -319,7 +317,7 @@ class MiD:
     def _update_changes_dict(self, attr_dict, inputs):
         for w in attr_dict:
             obj = attr_dict[w]
-            if not obj.check_test:  # record the instances containing target word to save time from checking
+            if not obj.checked_test:  # record the instances containing target word to save time from checking
                 my_utils.find_positions(inputs[0], obj)
             my_utils.record_attr_change(self.explainer, inputs[:3], obj, self.global_step)
 
@@ -338,7 +336,7 @@ class MiD:
         if self._mode == 'mid' and self.phase == 0:
             filtering = set()
             for w in new_ws:
-                avg_attr = np.mean(next(iter(attr_dict[w].attr_chagnes.values())))
+                avg_attr = np.mean(next(iter(attr_dict[w].attr_changes.values())))
                 if abs(avg_attr) < self.args.tau:
                     filtering.add(w)
                     del attr_dict[w]
@@ -347,11 +345,11 @@ class MiD:
             self.explainer.filter_suppress_words(filtering)
             self.logger.info('\t\tFinal check with words that are removed:')
             removed = set(new_ws) - set(self.explainer.get_suppress_words())
-            self.logger.info('\t\t{}'.format(fill(str(removed), width=MAX_LINE_WIDTH)))
-            self.logger.info('\t\t', '-' * 20)
+            self.logger.info('\t\t{}'.format(fill(str(removed), width=my_utils.MAX_LINE_WIDTH)))
+            self.logger.info('\t\t' + '-'*20)
 
             self.logger.info('\t\t------- Current Suppressing List --------')
-            self.logger.info('\t\t{}'.format(fill(str(self.explainer.neg_suppress_words), width=MAX_LINE_WIDTH)))
+            self.logger.info('\t\t{}'.format(fill(str(self.explainer.neg_suppress_words), width=my_utils.MAX_LINE_WIDTH)))
 
             self.suppress_records.append(self.explainer.get_suppress_words())
 
@@ -386,7 +384,7 @@ class MiD:
         loss_fct = nn.CrossEntropyLoss()
 
         # for input_ids, input_mask, segment_ids, label_ids in eval_dl:
-        for step, batch in enumerate(tqdm(dl, desc='Validate')):
+        for step, batch in enumerate(dl):
             batch = tuple(t.to(self.device) for t in batch)
 
             with torch.no_grad():
@@ -423,10 +421,11 @@ class MiD:
         eval_loss = eval_loss / nb_eval_steps
         eval_loss_reg = eval_loss_reg / (eval_reg_cnt + 1e-10)
         preds = preds[0]
+        ys = ys[0]
         pred_labels = np.argmax(preds, axis=1)  # FIXME: Currently, only support classification
         pred_prob = nn.functional.softmax(torch.from_numpy(preds).float(), -1).numpy()
         # result = my_utils.compute_metrics(pred_labels, all_label_ids.numpy(), pred_prob)
-        result = my_utils.compute_metrics(pred_labels, ys.numpy(), pred_prob)
+        result = my_utils.compute_metrics(pred_labels, ys, pred_prob)
         loss = tr_loss / (self.global_step + 1e-10) if self.args.do_train else None
 
         result['eval_loss'] = eval_loss
