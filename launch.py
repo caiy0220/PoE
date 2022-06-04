@@ -4,7 +4,6 @@ import logging
 import os
 import random
 import utils.utils as my_utils
-import yaml
 import argparse
 # import pickle
 
@@ -13,28 +12,17 @@ import torch
 # from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
 #                               TensorDataset)
 # from torch.utils.data.distributed import DistributedSampler
-# from torch.nn import CrossEntropyLoss, MSELoss
-from tqdm import tqdm
 
-# from sklearn.metrics import matthews_corrcoef, f1_score
-# from sklearn.metrics import precision_score, recall_score, roc_auc_score
 # from bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE, WEIGHTS_NAME, CONFIG_NAME, PHASE_NAMES
 from bert.modeling import BertForSequenceClassification
 from bert.tokenization import BertTokenizer
-from bert.optimization import BertAdam, WarmupLinearSchedule
-
-from loader import GabProcessor, WSProcessor, NytProcessor, convert_examples_to_features
-# import utils.config as config
+from bert.optimization import BertAdam
+from loader import GabProcessor, WSProcessor, NytProcessor
 
 from hiex import SamplingAndOcclusionExplain
 from poe import MiD
 
 logger = logging.getLogger(__name__)
-
-
-def load_config(pth):
-    with open(pth, 'r') as f:
-        return yaml.full_load(f)
 
 
 def get_hardware_setting(args):
@@ -71,7 +59,31 @@ def get_processors(args):
     return tokenizer, processors[task_name](args, tokenizer=tokenizer)
 
 
+def get_optimizer(args, model):
+    if not args.do_train:
+        return None
+    num_phases = 3 if args.mode == 'mid' else 1
+    num_train_optimization_steps = args.max_iter * num_phases
+
+    param_optimizer = list(model.named_parameters())
+    no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
+    optimizer_grouped_parameters = [
+        {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01},
+        {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
+    ]
+
+    return BertAdam(optimizer_grouped_parameters, lr=args.learning_rate,
+                    warmup=args.warmup_proportion, t_total=num_train_optimization_steps)
+
+
 def main(args):
+    if not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir)
+    """ 
+    ------------------------------------------------------------
+    |                Prepare training setting                  |
+    ------------------------------------------------------------
+    """
     device, n_gpu = get_hardware_setting(args)
     logger.info("device: {} n_gpu: {}, distributed training: {}, 16-bits training: {}".format(
         device, n_gpu, bool(args.local_rank != -1), args.fp16))
@@ -81,10 +93,6 @@ def main(args):
 
     assert args.do_train ^ args.do_eval, 'Activate either do_train or do_eval at a time'
 
-    if not os.path.exists(args.output_dir):
-        os.makedirs(args.output_dir)
-
-    output_mode = 'classification'
     """ 
     ------------------------------------------------------------
     |             Load model and prepare dataset               |
@@ -97,42 +105,33 @@ def main(args):
                                                           cache_dir=args.cache_dir,
                                                           num_labels=num_labels)
     model = model.to('cuda')
+    optimizer = get_optimizer(args, model)
 
-    # TODO: wrap the loading process with functions
-    train_examples = processor.get_train_examples(args.data_dir)
-    eval_examples = processor.get_dev_examples(args.data_dir)
-    train_features = convert_examples_to_features(
-        train_examples, label_list, args.max_seq_length, tokenizer, output_mode, args, verbose=0)
-    eval_features = convert_examples_to_features(
-        eval_examples, label_list, args.max_seq_length, tokenizer, output_mode, args, verbose=0)
-
-    num_phases = 3 if args.mode == 'mid' else 1
-    num_train_optimization_steps = args.max_iter * num_phases
-
-    param_optimizer = list(model.named_parameters())
-    no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
-    optimizer_grouped_parameters = [
-        {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01},
-        {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
-    ]
-    if args.do_train:
-        optimizer = BertAdam(optimizer_grouped_parameters,
-                             lr=args.learning_rate,
-                             warmup=args.warmup_proportion,
-                             t_total=num_train_optimization_steps)
-
+    """ 
+    ------------------------------------------------------------
+    |               Load SOC which deploys LM                  |
+    ------------------------------------------------------------
     """
-    Language model is used in the explanation method for generating the neighboring instances 
-    """
-    train_lm_dataloder = processor.get_dataloader('train', args.train_batch_size)
-    dev_lm_dataloader = processor.get_dataloader('dev', args.train_batch_size)
+    explainer = SamplingAndOcclusionExplain(model, args, tokenizer, processor, device=device, lm_dir=args.lm_dir,
+                                            output_path=os.path.join(args.output_dir, args.output_filename))
 
-    explainer = SamplingAndOcclusionExplain(model, args, tokenizer, device=device, vocab=tokenizer.vocab,
-                                            train_dataloader=train_lm_dataloder,
-                                            dev_dataloader=dev_lm_dataloader,
-                                            lm_dir=args.lm_dir,
-                                            output_path=os.path.join(args.output_dir,
-                                                                     args.output_filename))
+    # output_mode = 'classification'
+    train_features, train_examples = my_utils.load_text_as_feature(args, processor, tokenizer, 'train')
+    eval_features, eval_examples = my_utils.load_text_as_feature(args, processor, tokenizer, 'eval')
+
+
+    """ 
+    ------------------------------------------------------------
+    |                   Start Training                         |
+    ------------------------------------------------------------
+    """
+    mid = MiD(args, device)
+    mid.load_tools(tokenizer, processor, logger)
+    mid.load_model(model, optimizer)
+    mid.load_explainer(explainer)
+    mid.load_data(train_features, eval_features)
+
+    mid.train()
 
 
 if __name__ == '__main__':
@@ -140,7 +139,7 @@ if __name__ == '__main__':
     files = ['cfg.yaml', 'lm.yaml', 'soc.yaml']
     t_args = argparse.Namespace()
     for file in files:
-        t_args.__dict__.update(load_config(pref + file))
+        t_args.__dict__.update(my_utils.load_config(pref + file))
 
     parser = argparse.ArgumentParser()
     _args = parser.parse_args(namespace=t_args)

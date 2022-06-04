@@ -115,8 +115,7 @@ class MiD:
 
     def set_training_mode(self):
         mode = self.args.mode       # TODO: 0. add param
-        assert mode in self.supported_modes, 'Unknown mode: [{}], currently support: {}'.format(mode,
-                                                                                                self.supported_modes)
+        assert mode in self.supported_modes, 'Unknown mode: [{}], only support: {}'.format(mode, self.supported_modes)
         # Set iterators
         if mode == 'vanilla':
             self.phases = [0]
@@ -139,10 +138,13 @@ class MiD:
 
     def init_manual_list(self):
         ws = self.explainer.neutral_words
+        self.manual_change_dict = dict()
         for w in ws:
             self.manual_change_dict[w] = my_utils.AttrRecord(w, self.tokenizer.vocab[w])
 
     def train(self):
+        self.init_trainer()     # TODO: 6. handling the case of resuming training
+
         start_at = time.time()
         self.phase = next(self.phases_iter, -1)
         no_progress_cnt, val_best_f1 = 0, -1
