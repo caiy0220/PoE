@@ -1,12 +1,33 @@
 from collections import OrderedDict
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+from loader import convert_examples_to_features
 import os
 import torch
 import json
+import yaml
 
 CONFIG_NAME = "config.json"     # TODO: do multiple config to separate model from framework
 WEIGHTS_NAME = "pytorch_model.bin"
 PHASE_NAMES = ['normal', 'correcting', 'stabilizing']
+
+
+def load_config(pth):
+    with open(pth, 'r') as f:
+        return yaml.full_load(f)
+
+
+def load_text_as_feature(args, processor, tokenizer, dataset, output_mode='classification'):
+    valid_choices = ['train', 'test', 'eval']
+    assert dataset in valid_choices, 'Invalid dataset is given: [{}], valid choices {}'.format(dataset, valid_choices)
+    if dataset == 'train':
+        examples = processor.get_train_examples(args.data_dir)
+    elif dataset == 'eval':
+        examples = processor.get_dev_examples(args.data_dir)
+    else:
+        examples = processor.get_test_examples(args.data_dir)
+    features = convert_examples_to_features(examples, processor.get_labels(),
+                                            args.max_seq_length, tokenizer, output_mode, args, verbose=0)
+    return features, examples
 
 
 def load_word_from_file(pth):

@@ -32,7 +32,7 @@ class GabProcessor(DataProcessor):
         self.neutral_words = neutral_words
         self.neutral_words_ids = neutral_words_ids
         assert neutral_words
-
+        return neutral_words_ids
 
     def _create_examples(self, data_dir, split, label=None):
         """
@@ -72,7 +72,7 @@ class GabProcessor(DataProcessor):
         raise NotImplementedError
 
     def get_labels(self):
-        return [0,1]
+        return [0, 1]
 
     def get_features(self, split):
         """

@@ -50,21 +50,18 @@ def color_picker(inp, color_list, rules):
 
 
 class SamplingAndOcclusionExplain:
-    def __init__(self, model, configs, tokenizer, output_path, device, lm_dir=None, train_dataloader=None,
-                 dev_dataloader=None, vocab=None):
+    def __init__(self, model, configs, tokenizer, processor, output_path, device, lm_dir=None):
         logger.info('Current version of SOC: 0.000.201')
         self.configs = configs
         self.model = model
         self.lm_dir = lm_dir
-        self.train_dataloader = train_dataloader
-        self.dev_dataloader = dev_dataloader
-        self.vocab = vocab
         self.output_path = output_path
         self.device = device
         self.hiex = configs.hiex
         self.tokenizer = tokenizer
+        self.vocab = tokenizer.vocab
 
-        self.lm_model = self.detect_and_load_lm_model()
+        self.lm_model = self.detect_and_load_lm_model(processor)
 
         self.algo = _SamplingAndOcclusionAlgo(model, tokenizer, self.lm_model, output_path, configs)
 
@@ -114,7 +111,7 @@ class SamplingAndOcclusionExplain:
         self.window_size = configs.window_size
         self.window_count = self.window_size * configs.ratio_in_window
 
-    def detect_and_load_lm_model(self):
+    def detect_and_load_lm_model(self, processor):
         if not self.lm_dir:
             self.lm_dir = 'runs/lm/'
         if not os.path.isdir(self.lm_dir):
@@ -126,7 +123,7 @@ class SamplingAndOcclusionExplain:
                 file_name = x
                 break
         if not file_name:
-            self.train_lm()
+            self.train_lm(processor)
             for x in os.listdir(self.lm_dir):
                 if x.startswith('best'):
                     file_name = x
@@ -134,11 +131,12 @@ class SamplingAndOcclusionExplain:
         lm_model = torch.load(open(os.path.join(self.lm_dir,file_name), 'rb'))
         return lm_model
 
-    def train_lm(self):
+    def train_lm(self, processor):
         logger.info('Missing pretrained LM. Now training')
         model = BiGRULanguageModel(self.configs, vocab=self.vocab, device=self.device).to(self.device)
-        do_train_lm(model, lm_dir=self.lm_dir, lm_epochs=20,
-                    train_iter=self.train_dataloader, dev_iter=self.dev_dataloader)
+        train_dataloader = processor.get_dataloader('train', self.configs.train_batch_size)
+        dev_dataloader = processor.get_dataloader('dev', self.configs.train_batch_size)
+        do_train_lm(model, lm_dir=self.lm_dir, lm_epochs=20, train_iter=train_dataloader, dev_iter=dev_dataloader)
 
     def word_level_explanation_bert(self, input_ids, input_mask, segment_ids, label=None):
         # requires batch size is 1
