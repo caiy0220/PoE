@@ -5,7 +5,6 @@ import os
 import random
 import utils.utils as my_utils
 import argparse
-from textwrap import fill
 # import pickle
 
 import numpy as np
@@ -23,10 +22,9 @@ from loader import GabProcessor, WSProcessor, NytProcessor
 from hiex import SamplingAndOcclusionExplain
 from poe import MiD
 
-# TODO: message string at the beginning
 # TODO: terminal control of parser
-# TODO: nested tqdm
 
+VERSION = 'Current version of main: 1.000.000'
 
 try:
     from pathlib import Path
@@ -146,6 +144,9 @@ def main(args):
     mid.load_explainer(explainer)
     mid.load_data(train_features, eval_features)
 
+    logger.info('\n')
+    logger.info('='*my_utils.MAX_LINE_WIDTH)
+
     mid.train()
 
 
@@ -162,10 +163,10 @@ if __name__ == '__main__':
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                         datefmt='%m/%d/%Y %H:%M:%S',
                         level=logging.INFO if _args.local_rank in [-1, 0] else logging.WARN)
-    logger.info('Current version of main: 0.000.213')
+    logger.info(VERSION)
 
     logger.info('='*my_utils.MAX_LINE_WIDTH)
-    logger.info('{}'.format(fill(_args.__str__()), width=my_utils.MAX_LINE_WIDTH))
+    logger.info('{}'.format(_args))
     logger.info('='*my_utils.MAX_LINE_WIDTH)
 
     main(_args)

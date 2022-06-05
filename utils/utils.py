@@ -1,6 +1,7 @@
 from collections import OrderedDict
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 from loader import convert_examples_to_features
+import re
 import os
 import torch
 import json
@@ -9,7 +10,7 @@ import yaml
 CONFIG_NAME = "config.json"     # TODO: do multiple config to separate model from framework
 WEIGHTS_NAME = "pytorch_model.bin"
 PHASE_NAMES = ['normal', 'correcting', 'stabilizing']
-MAX_LINE_WIDTH = 80
+MAX_LINE_WIDTH = 150
 
 
 def load_config(pth):
@@ -167,3 +168,24 @@ def seconds2hms(s):
     m = (s % 3600) // 60
     s = s % 60
     return h, m, s
+
+
+def heading(msg):
+    remains = MAX_LINE_WIDTH - len(msg) - 2
+    return '|' + ' '*(remains // 2) + msg + ' '*(remains // 2 + remains % 2) + '|'
+
+
+class DescStr:
+    def __init__(self):
+        self._desc = ''
+
+    def write(self, instr):
+        self._desc += re.sub('\n|\x1b.*|\r', '', instr)
+
+    def read(self):
+        ret = self._desc
+        self._desc = ''
+        return ret
+
+    def flush(self):
+        pass
