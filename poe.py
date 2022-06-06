@@ -149,7 +149,7 @@ class MiD:
         val_best_results, val_phase_names = [], []
         val_best = None
 
-        with tqdm(total=len(self.phases)*self.args.max_iter, ncols=120, desc='#Iter') as pbar:
+        with tqdm(total=len(self.phases)*self.args.max_iter, ncols=my_utils.MAX_LINE_WIDTH, desc='#Iter') as pbar:
             self.pbar = pbar
             while self.phase >= 0:
                 tr_loss = 0
@@ -255,10 +255,11 @@ class MiD:
                             self.step_in_phase = 0
                             if self.phase == 2:
                                 self.args.max_iter += self.args.extra_iter
+        self.logger.info('\n')
         self.logger.info('--> Training complete')
         time_cost = my_utils.seconds2hms(time.time() - start_at)
 
-        for i, name in val_phase_names:
+        for i, name in enumerate(val_phase_names):
             self.logger.info('Best performing model on [{}]'.format(name))
             result = val_best_results[i]
             for key in sorted(result.keys()):
@@ -379,10 +380,6 @@ class MiD:
         self.logger.info('\t\tNum examples = %d', len(eval_dl.dataset))
         return self._validate(eval_dl, tr_loss)
 
-    def test(self, tr_loss=0.):
-        # TODO: 5. validate finalized model on test set
-        pass
-
     def _validate(self, dl, tr_loss=0.):
         self.model.train(False)
         eval_loss, eval_loss_reg = 0, 0
@@ -402,14 +399,13 @@ class MiD:
             eval_loss += tmp_eval_loss.mean().item()
 
             # if self.args.reg_explanations:
-            if self._mode == 'mid':     # TODO: 3. distinguish different mode inside
-                with torch.no_grad():
+            with torch.no_grad():
+                if self._mode == 'mid':     # TODO: 3. distinguish different mode inside
                     reg_loss, reg_cnt = self.explainer.suppress_explanation_loss(*batch, do_backprop=False)
-            elif self._mode == 'soc':
-                with torch.no_grad():
+                elif self._mode == 'soc':
                     reg_loss, reg_cnt = self.explainer.compute_explanation_loss(*batch, do_backprop=False)
-            else:
-                reg_loss, reg_cnt = 0, 0
+                else:
+                    reg_loss, reg_cnt = 0, 0
             eval_loss_reg += reg_loss
             eval_reg_cnt += reg_cnt
             nb_eval_steps += 1

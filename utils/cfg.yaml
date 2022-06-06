@@ -34,7 +34,7 @@ negative_weight: 0.1
 
 # ------ Advanced training setting, like batch normalization, distribution setting... ------
 gradient_accumulation_steps: 1
-fp16: false
+#fp16: false
 loss_scale: 0
 local_rank: -1
 server_ip: ''
