@@ -5,3 +5,4 @@ runs
 .idea
 tmp
 notebook
+*.pyc

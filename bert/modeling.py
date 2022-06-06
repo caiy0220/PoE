@@ -557,6 +557,8 @@ class BertPreTrainedModel(nn.Module):
         kwargs.pop('cache_dir', None)
         from_tf = kwargs.get('from_tf', False)
         kwargs.pop('from_tf', None)
+        verbose = kwargs.get('verbose', 0)
+        kwargs.pop('verbose', None)
 
         if pretrained_model_name_or_path in PRETRAINED_MODEL_ARCHIVE_MAP:
             archive_file = PRETRAINED_MODEL_ARCHIVE_MAP[pretrained_model_name_or_path]
@@ -574,11 +576,12 @@ class BertPreTrainedModel(nn.Module):
                     ', '.join(PRETRAINED_MODEL_ARCHIVE_MAP.keys()),
                     archive_file))
             return None
-        if resolved_archive_file == archive_file:
-            logger.info("loading archive file {}".format(archive_file))
-        else:
-            logger.info("loading archive file {} from cache at {}".format(
-                archive_file, resolved_archive_file))
+        if verbose:
+            if resolved_archive_file == archive_file:
+                logger.info("loading archive file {}".format(archive_file))
+            else:
+                logger.info("loading archive file {} from cache at {}".format(
+                    archive_file, resolved_archive_file))
         tempdir = None
         if os.path.isdir(resolved_archive_file) or from_tf:
             serialization_dir = resolved_archive_file
@@ -596,7 +599,8 @@ class BertPreTrainedModel(nn.Module):
             # Backward compatibility with old naming format
             config_file = os.path.join(serialization_dir, BERT_CONFIG_NAME)
         config = BertConfig.from_json_file(config_file)
-        logger.info("Model config {}".format(config))
+        if verbose:
+            logger.info("Model config {}".format(config))
         # Instantiate model.
         model = cls(config, *inputs, **kwargs)
         if state_dict is None and not from_tf:
