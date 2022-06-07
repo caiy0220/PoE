@@ -16,6 +16,7 @@ reg_strength: 0.1   # lambda
 window_size: 10
 ratio_in_window: 0.65
 attr_on_training: 0
+count_thresh: 50
 
 # ------ Hyper-parameters for training ------
 learning_rate: 2.0e-05
