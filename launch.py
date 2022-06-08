@@ -17,7 +17,7 @@ from poe import MiD
 
 # TODO: terminal control of parser
 
-VERSION = 'Current version of main: 1.000.000'
+VERSION = 'Current version of main: 1.000.001'
 
 try:
     from pathlib import Path
@@ -50,36 +50,6 @@ def set_random_seed(args):
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-
-
-# def get_processors(args):
-#     processors = {
-#         'gab': GabProcessor,
-#         'ws': WSProcessor,
-#         'nyt': NytProcessor
-#     }
-#     task_name = args.task_name.lower()
-#     assert task_name in processors, 'Task not found [{}]'.format(task_name)
-#
-#     tokenizer = BertTokenizer.from_pretrained(args.bert_model, do_lower_case=args.do_lower_case)
-#     return tokenizer, processors[task_name](args, tokenizer=tokenizer)
-
-
-# def get_optimizer(args, model):
-#     if not args.do_train:
-#         return None
-#     num_phases = 3 if args.mode == 'mid' else 1
-#     num_train_optimization_steps = args.max_iter * num_phases
-#
-#     param_optimizer = list(model.named_parameters())
-#     no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
-#     optimizer_grouped_parameters = [
-#         {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01},
-#         {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
-#     ]
-#
-#     return BertAdam(optimizer_grouped_parameters, lr=args.learning_rate,
-#                     warmup=args.warmup_proportion, t_total=num_train_optimization_steps)
 
 
 def main(args):
@@ -123,19 +93,17 @@ def main(args):
     explainer = SamplingAndOcclusionExplain(model, args, tokenizer, processor, device=device, lm_dir=args.lm_dir,
                                             output_path=os.path.join(args.output_dir, args.output_filename))
 
-    # output_mode = 'classification'
     train_features, train_examples = my_utils.load_text_as_feature(args, processor, tokenizer, 'train')
     eval_features, eval_examples = my_utils.load_text_as_feature(args, processor, tokenizer, 'eval')
-
-    explainer.get_global_words_count(np.array([f.input_ids for f in train_features], dtype=np.int64))    # Preparation for FPP
+    # explainer.get_global_words_count(np.array([f.input_ids for f in train_features], dtype=np.int64))    # Preparation for FPP
 
     """ 
     ------------------------------------------------------------
     |                   Start Training                         |
     ------------------------------------------------------------
     """
-    mid = MiD(args, device)
-    mid.load_tools(tokenizer, processor, logger)
+    mid = MiD(args, device, logger=logger, tokenizer=tokenizer, processor=processor)
+    # mid.load_tools(tokenizer, processor, logger)
     mid.load_model(model, optimizer)
     mid.load_explainer(explainer)
     mid.load_data(train_features, eval_features)
@@ -159,7 +127,7 @@ if __name__ == '__main__':
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                         datefmt='%m/%d/%Y %H:%M:%S',
                         level=logging.INFO if _args.local_rank in [-1, 0] else logging.WARN)
-    logger.info(VERSION)
+    logger.info(my_utils.heading(VERSION))
 
     logger.info('='*my_utils.MAX_LINE_WIDTH)
     logger.info('{}'.format(_args))

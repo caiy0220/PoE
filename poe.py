@@ -5,10 +5,11 @@ import utils.utils as my_utils
 from tqdm import tqdm
 import time
 import pickle
+import string
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, RandomSampler, TensorDataset, SequentialSampler
+from torch.utils.data import DataLoader, RandomSampler, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
 from torch import nn
 
@@ -18,6 +19,8 @@ from torch import nn
 # from bert.optimization import BertAdam, WarmupLinearSchedule
 # from loader import GabProcessor, WSProcessor, NytProcessor, convert_examples_to_features
 # from hiex import SamplingAndOcclusionExplain
+
+VERSION = 'Current version of MiD: 1.001.001'
 
 
 def unpack_features(fs, output_mode='classification'):
@@ -61,6 +64,15 @@ def find_incorrect(model, batch, device='cuda'):
     return np.where(matched == 0)[0]
 
 
+def feature_fpp(count_dict, total_dict, thresh):
+    dict_ratio = dict()
+    for w in count_dict.keys():
+        if total_dict[w] < thresh:
+            continue
+        dict_ratio[w] = float(count_dict[w]) / total_dict[w]
+    return dict_ratio
+
+
 def update_fpp_dict(attr_dict, stats_li, steps):
     fpp_dict, tnpp_dict, fnp_dict = stats_li
     for w in attr_dict.keys():
@@ -73,26 +85,37 @@ def update_fpp_dict(attr_dict, stats_li, steps):
 
 
 class MiD:
-    def __init__(self, args, device):
+    def __init__(self, args, device, logger, tokenizer, processor):
+        logger.info(my_utils.heading(VERSION))
         self.args = args
         self.supported_modes = ['vanilla', 'mid', 'soc']
         self.phases, self.phases_iter, self.phase = [], None, -1
         self._mode = self.set_training_mode()
         self.device = device
 
-        self.global_step, self.step_in_phase, self.num_labels = 0, 0, 0
+        ''' For training and recording '''
+        self.logger, self.tokenizer, self.processor = logger, tokenizer, processor
+        self.global_step, self.step_in_phase, self.num_labels = 0, 0, len(self.processor.get_labels())
         self.losses, self.reg_losses = [], []
         self.suppress_records = [[], []]
         self.attr_change_dict, self.manual_change_dict = dict(), dict()  # dict of AttrRecord
 
         self.explainer, self.model, self.optimizer = None, None, None
-        self.logger, self.tokenizer, self.processor = None, None, None
         self.ds_train, self.ds_eval = None, None  # ids, mask, segment_ids, label
         self.dl_train, self.dl_eval = None, None
 
         class_weight = torch.FloatTensor([self.args.negative_weight, 1]).to(self.device)
-        self.loss_fct = nn.CrossEntropyLoss(class_weight)  # FIXME: support different losses
+        self.loss_fct = nn.CrossEntropyLoss(class_weight)
         self.desc, self.pbar = my_utils.DescStr(), None  # For nested progress bar
+
+        ''' Sliding window for word detector '''
+        self.neutral_words, self.neutral_words_ids = my_utils.load_suppress_words(args.neutral_words_file, self.tokenizer, args.suppress_weighted)
+        self.neg_suppress_words, self.neg_suppress_words_ids = my_utils.load_suppress_words('', self.tokenizer, args.suppress_weighted)
+        self.pos_suppress_words, self.pos_suppress_words_ids = my_utils.load_suppress_words('', self.tokenizer, args.suppress_weighted)
+
+        self.stop_words, self.stop_words_ids = self.get_stop_words()
+        self.word_count_dict, self.word_appear_records = dict(), dict()
+        self.window_count = args.window_size * args.ratio_in_window
 
     def load_tools(self, tokenizer, processor, logger):
         self.logger = logger
@@ -110,6 +133,7 @@ class MiD:
     def load_data(self, train_features, eval_features):
         self.ds_train = unpack_features(train_features, self.args)
         self.ds_eval = unpack_features(eval_features, self.args)
+        self.get_global_words_count(np.array([f.input_ids for f in train_features], dtype=np.int64))
 
     def set_training_mode(self):
         mode = self.args.mode
@@ -135,7 +159,7 @@ class MiD:
         self.dl_eval = get_dataloader(self.ds_eval, self.args, train=False)
 
     def init_manual_list(self):
-        ws = self.explainer.neutral_words
+        ws = self.neutral_words
         self.manual_change_dict = dict()
         for w in ws:
             self.manual_change_dict[w] = my_utils.AttrRecord(w, self.tokenizer.vocab[w])
@@ -160,31 +184,31 @@ class MiD:
                     ''' input_ids, mask, segment_ids, label '''
                     batch = tuple(t.to(self.device) for t in batch)
 
-                    ''' ==================================================== '''
-                    ''' |                 Cross entropy loss               | '''
-                    ''' ==================================================== '''
+                    ''' ==================================================== 
+                        |                 Cross entropy loss               | 
+                        ==================================================== '''
                     # define a new function to compute loss values for both output_modes
                     logits = self.model(batch[0], batch[2], batch[1])  # be careful with the order
 
                     # Update loss in case n_gpu/gradient_accumulation is set
-                    # TODO: 6. check this, defined before actual training starts
                     loss = self.loss_fct(logits.view(-1, self.num_labels), batch[-1].view(-1))
 
                     tr_loss += loss.item()
                     loss.backward()
 
-                    ''' ==================================================== '''
-                    ''' |                 Regularization term              | '''
-                    ''' ==================================================== '''
+                    ''' ==================================================== 
+                        |                 Regularization term              | 
+                        ==================================================== '''
                     if self.phase == 1:
                         # Note that the backpropagation happens within the function
-                        # TODO: 5. different suppression strategies
-                        if self._mode == 'mid':
-                            reg_loss, _ = self.explainer.suppress_explanation_loss(*batch, do_backprop=True)
-                        else:
-                            reg_loss, _ = self.explainer.compute_explanation_loss(*batch, do_backprop=True)
+                        targets = self.neg_suppress_words_ids if self._mode == 'mid' else self.neutral_words_ids
+                        ignore = 0 if self._mode == 'mid' else -1
+                        reg_loss, _ = self.explainer.suppress_explanation_loss(batch, targets, ignore_label=ignore, do_backprop=True)
+                        # if self._mode == 'mid':
+                        #     reg_loss, _ = self.explainer.suppress_explanation_loss(*batch, do_backprop=True)
+                        # else:
+                        #     reg_loss, _ = self.explainer.compute_explanation_loss(*batch, do_backprop=True)
                     else:
-                        # Output reg_loss only for recording
                         reg_loss = 0.
                     self.losses.append(loss.item())
                     self.reg_losses.append(loss.item() + reg_loss)
@@ -199,17 +223,17 @@ class MiD:
 
                     if self.global_step % self.args.reg_steps == 0:
                         # Update suppressing list, and record the current best version if the constraint satisfies
-                        ''' ==================================================== '''
-                        ''' |          Maintaining the suppression list        | '''
-                        ''' ==================================================== '''
+                        ''' ==================================================== 
+                            |          Maintaining the suppression list        | 
+                            ==================================================== '''
                         self.logger.info('\n')
                         self.logger.info('***** Update attribution records at #{} *****'.format(self.global_step))
                         self.update_fpp_window(allow_change=(self.phase == 0))
                         val_res = self.validate(tr_loss, use_train=self.args.attr_on_training)
 
-                        ''' ==================================================== '''
-                        ''' |            Recording the best version            | '''
-                        ''' ==================================================== '''
+                        ''' ==================================================== 
+                            |            Recording the best version            |
+                            ==================================================== '''
                         val_acc, val_f1 = val_res['acc'], val_res['f1']
                         if self.global_step % self.args.val_steps == 0:
                             self.logger.info("***** Validation *****")
@@ -232,9 +256,9 @@ class MiD:
                                 lr_str += str(param_group['lr']) + '  '
                             self.logger.info("Current learning rate: {}".format(lr_str))
 
-                        ''' ==================================================== '''
-                        ''' |           Switching to the next phase            | '''
-                        ''' ==================================================== '''
+                        ''' ==================================================== 
+                            |           Switching to the next phase            | 
+                            ==================================================== '''
                         if self.step_in_phase >= self.args.max_iter > 0:
                             # Exit phase when criterion satisfies
                             # TODO: 5. save status everytime a phase ends, for resuming training after disconnection
@@ -274,7 +298,7 @@ class MiD:
             self.logger.info('Save to {}'.format(self.args.stats_file))
 
     def update_attr_dict(self):
-        new_ws = list(set(self.explainer.get_suppress_words()) - set(self.suppress_records[-1]))
+        new_ws = list(set(self._get_suppress_words()) - set(self.suppress_records[-1]))
         if self.args.get_attr:
             tmp_change_dict = self.attr_change_dict
         else:
@@ -305,18 +329,10 @@ class MiD:
 
         if self.args.mode == 'mid':
             # the most updated version
-            # TODO: 3. separate the process of extracting the FPR, should be done by the detector
-            stats_li = self.explainer.update_suppress_words_lazy(
-                [wrong_li[0], wrong_li[-1]], [right_li[0], right_li[-1]],
-                verbose=0, allow_change=allow_change)
+            stats_li = self.update_suppress_words(wrong_li, right_li, allow_change=allow_change, verbose=verbose)
             if self.args.get_attr:
                 self.update_fpp(stats_li)
-        else:
-            self.explainer.update_suppress_words(
-                [wrong_li[0], wrong_li[-1]], [right_li[0], right_li[-1]],
-                verbose=verbose)
 
-        # self.suppress_records.append(self.explainer.get_suppress_words())     # this should be done after checking att
         self.model.train(True)
 
     def update_fpp(self, stats_li):
@@ -351,16 +367,16 @@ class MiD:
                     del attr_dict[w]
                     self.logger.info('\t\tFiltered word: {:>15} with avg. attr: {:.3f}'.format(w, avg_attr))
 
-            self.explainer.filter_suppress_words(filtering)
+            self.filter_suppress_words(filtering)
             self.logger.info('\t\tFinal check with words that are removed:')
-            removed = set(new_ws) - set(self.explainer.get_suppress_words())
+            removed = set(new_ws) - set(self._get_suppress_words())
             self.logger.info('\t\t{}'.format(removed))
             self.logger.info('\t\t' + '-'*20)
 
             self.logger.info('\t\t------- Current Suppressing List --------')
-            self.logger.info('\t\t{}'.format(self.explainer.neg_suppress_words))
+            self.logger.info('\t\t{}'.format(self.neg_suppress_words))
 
-            self.suppress_records.append(self.explainer.get_suppress_words())
+            self.suppress_records.append(self._get_suppress_words())
 
     def validate(self, tr_loss, use_train=0):
         """
@@ -400,12 +416,18 @@ class MiD:
 
             # if self.args.reg_explanations:
             with torch.no_grad():
-                if self._mode == 'mid':     # TODO: 3. distinguish different mode inside
-                    reg_loss, reg_cnt = self.explainer.suppress_explanation_loss(*batch, do_backprop=False)
-                elif self._mode == 'soc':
-                    reg_loss, reg_cnt = self.explainer.compute_explanation_loss(*batch, do_backprop=False)
+                if self._mode == 'mid' or self._mode == 'soc':
+                    targets = self.neg_suppress_words_ids if self._mode == 'mid' else self.neutral_words_ids
+                    ignore = 0 if self._mode == 'mid' else -1
+                    reg_loss, reg_cnt = self.explainer.suppress_explanation_loss(batch, targets, ignore_label=ignore, do_backprop=False)
                 else:
                     reg_loss, reg_cnt = 0, 0
+                # if self._mode == 'mid':
+                #     reg_loss, reg_cnt = self.explainer.suppress_explanation_loss(*batch, do_backprop=False)
+                # elif self._mode == 'soc':
+                #     reg_loss, reg_cnt = self.explainer.compute_explanation_loss(*batch, do_backprop=False)
+                # else:
+                #     reg_loss, reg_cnt = 0, 0
             eval_loss_reg += reg_loss
             eval_reg_cnt += reg_cnt
             nb_eval_steps += 1
@@ -437,7 +459,6 @@ class MiD:
 
         result['eval_loss'] = eval_loss
         result['eval_loss_reg'] = eval_loss_reg
-        # result['global_step'] = self.global_step
         result['loss'] = loss
 
         split = 'dev'
@@ -462,3 +483,111 @@ class MiD:
 
         self.model.train(True)
         return result
+
+    """
+    ================================================================
+    |                  Suspicious detector                         |
+    ================================================================
+    """
+    def _get_suppress_words(self):
+        return self.neg_suppress_words.copy()
+
+    def get_global_words_count(self, corpus):
+        counter, _ = my_utils.words_count(corpus, self.stop_words_ids)
+        for wid, cnt in counter:
+            self.word_count_dict[wid] = cnt
+
+    def get_ratios(self, group_li):
+        res = []
+        for group in group_li:
+            count, _ = my_utils.words_count(group, self.stop_words_ids)
+            res.append(feature_fpp(dict(count), self.word_count_dict, self.args.count_thresh))
+        return res
+
+    def update_suppress_words(self, wrong_li, right_li, verbose=0, allow_change=False):
+        fns, fps, tns, tps = [], [], [], []
+        for idx in range(len(wrong_li[0])):
+            if wrong_li[-1][idx] == 1:
+                # the ground truth is positive, indicating the instance is false negative instance
+                fns.append(wrong_li[0][idx].numpy().tolist())
+            else:
+                fps.append(wrong_li[0][idx].numpy().tolist())
+
+        for idx in range(len(right_li[0])):
+            if right_li[-1][idx] == 1:
+                tps.append(right_li[0][idx].numpy().tolist())
+            else:
+                tns.append(right_li[0][idx].numpy().tolist())
+
+        tnps = tns + tps
+        fns_word_ratio, fps_word_ratio, tnps_word_ratio = self.get_ratios([fns, fps, tnps])
+        # sorted_fnp = sorted(fns_word_ratio.items(), key=lambda item: item[1])[::-1]
+        sorted_fpp = sorted(fps_word_ratio.items(), key=lambda item: item[1])[::-1]
+
+        if allow_change:
+            new_suppress_words_ids = []
+            cnt = 0
+            for p in sorted_fpp:
+                if p[1] <= self.args.eta:
+                    break
+
+                cnt += 1
+                if verbose:
+                    self.logger.info('{:<12}: {:.3f} [{:<5}]'.format(self.tokenizer.ids_to_tokens[p[0]], p[1], self.word_count_dict[p[0]]))
+
+                target = p[0]
+                new_suppress_words_ids.append(target)
+                if target not in self.word_appear_records:
+                    self.word_appear_records[target] = [1]
+                else:
+                    self.update_word_appear_records(target, 1)
+
+            for w_ids in self.word_appear_records.keys():
+                if w_ids not in new_suppress_words_ids:
+                    self.update_word_appear_records(w_ids, 0)
+            self._update_suppress_words()
+        return fps_word_ratio, tnps_word_ratio, fns_word_ratio
+
+    def _update_suppress_words(self):
+        word_counts_dict = self._get_word_counts()
+        for w_ids in word_counts_dict.keys():
+            if word_counts_dict[w_ids] == 0:
+                self.word_appear_records.pop(w_ids)
+
+            if word_counts_dict[w_ids] >= self.window_count:
+                self.word_appear_records.pop(w_ids)
+                w = self.tokenizer.ids_to_tokens[w_ids]
+                self.neg_suppress_words_ids[w_ids] = 1.
+                self.neg_suppress_words[w] = 1.
+
+    def filter_suppress_words(self, ws):
+        for w in ws:
+            w_id = self.tokenizer.vocab[w]
+            del self.neg_suppress_words_ids[w_id]
+            del self.neg_suppress_words[w]
+
+    def _get_word_counts(self):
+        word_count_dict = dict()
+        for w_ids in self.word_appear_records.keys():
+            word_count_dict[w_ids] = sum(self.word_appear_records[w_ids])
+        return word_count_dict
+
+    def update_word_appear_records(self, w_ids, v):
+        self.word_appear_records[w_ids].append(v)
+        if len(self.word_appear_records[w_ids]) > self.args.window_size:
+            self.word_appear_records[w_ids].pop(0)
+
+    def get_stop_words(self):
+        stop_words = {'[CLS]', '[PAD]', '[SEP]'}
+        for pc in string.punctuation:
+            stop_words.add(pc)
+
+        stop_words_ids = set()
+        for s in stop_words:
+            try:
+                stop_words_ids.add(self.tokenizer.vocab[s])
+            except KeyError:
+                self.logger.warning('=' * my_utils.MAX_LINE_WIDTH)
+                self.logger.warning('WARNING: Cannot find target word in vocab:\t{}'.format(s))
+                self.logger.warning('=' * my_utils.MAX_LINE_WIDTH + '\n\n')
+        return stop_words, stop_words_ids

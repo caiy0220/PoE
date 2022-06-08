@@ -1,11 +1,13 @@
 from collections import OrderedDict
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 from loader import convert_examples_to_features
+from collections import Counter
 import re
 import os
 import torch
 import json
 import yaml
+import string
 
 CONFIG_NAME = "config.json"     # TODO: do multiple config to separate model from framework
 WEIGHTS_NAME = "pytorch_model.bin"
@@ -16,6 +18,34 @@ MAX_LINE_WIDTH = 150
 def load_config(pth):
     with open(pth, 'r') as f:
         return yaml.full_load(f)
+
+
+def load_suppress_words(pth, tokenizer, suppress_weighted=False):
+    if pth == '':
+        return dict(), dict()
+    with open(pth) as f:
+        words = dict()
+        words_ids = dict()
+        for line in f.readlines():
+            segs = line.strip().split('\t')
+            word = segs[0]
+            val = float(segs[1]) if suppress_weighted else 1.
+            canonical = tokenizer.tokenize(word)
+            if len(canonical) > 1:
+                canonical.sort(key=lambda x: -len(x))
+                print(canonical)
+            words[word] = val
+            words_ids[tokenizer.vocab[word]] = val
+        assert words
+    return words, words_ids
+
+
+def words_count(corpus, stop_words_ids):
+    words_ids = []
+    for t in corpus:
+        words_ids += [w for w in t if w not in stop_words_ids]
+    words_ids_count = Counter(words_ids).most_common()
+    return words_ids_count, len(words_ids)
 
 
 def load_text_as_feature(args, processor, tokenizer, dataset, output_mode='classification'):
