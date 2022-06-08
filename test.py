@@ -293,12 +293,17 @@ def main(args):
 if __name__ == "__main__":
     pref = 'utils/'
     files = ['cfg.yaml', 'lm.yaml', 'soc.yaml']
-    t_args = argparse.Namespace()
+    config = dict()
     for file in files:
-        t_args.__dict__.update(my_utils.load_config(pref + file))
+        config.update(my_utils.load_config(pref + file))
 
     parser = argparse.ArgumentParser()
-    _args = parser.parse_args(namespace=t_args)
+    ns = argparse.Namespace()
+    ns.__dict__.update(config)
+    for k in ns.__dict__:
+        parser.add_argument('--'+k, type=type(getattr(ns, k)))
+
+    _args = parser.parse_args(namespace=ns)
 
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                         datefmt='%m/%d/%Y %H:%M:%S',
@@ -307,6 +312,10 @@ if __name__ == "__main__":
     logger.info(VERSION)
     logger.info('='*my_utils.MAX_LINE_WIDTH)
     logger.info('{}'.format(_args))
+    args_diff = my_utils.get_args_diff(config, _args.__dict__)
+    if args_diff:
+        logger.info('-' * my_utils.MAX_LINE_WIDTH)
+        logger.info('{}'.format(args_diff))
     logger.info('='*my_utils.MAX_LINE_WIDTH)
 
     main(_args)

@@ -200,6 +200,14 @@ def seconds2hms(s):
     return h, m, s
 
 
+def get_args_diff(d_arg_yaml, d_arg):
+    diff = dict()
+    for k in d_arg:
+        if d_arg[k] != d_arg_yaml[k]:
+            diff[k] = d_arg[k]
+    return diff
+
+
 def heading(msg):
     remains = MAX_LINE_WIDTH - len(msg) - 2
     return '|' + ' '*(remains // 2) + msg + ' '*(remains // 2 + remains % 2) + '|'
