@@ -15,8 +15,6 @@ from bert.modeling import BertForSequenceClassification
 from hiex import SamplingAndOcclusionExplain
 from poe import MiD
 
-# TODO: terminal control of parser
-
 VERSION = 'Current version of main: 1.000.001'
 
 try:
@@ -129,8 +127,7 @@ if __name__ == '__main__':
 
     _args = parser.parse_args(namespace=ns)
 
-    logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
-                        datefmt='%m/%d/%Y %H:%M:%S',
+    logging.basicConfig(format='%(asctime)s %(levelname)s - %(name)s -   %(message)s', datefmt='%m/%d %H:%M:%S',
                         level=logging.INFO if _args.local_rank in [-1, 0] else logging.WARN)
     logger.info(my_utils.heading(VERSION))
 

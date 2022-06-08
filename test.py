@@ -43,12 +43,10 @@ from hiex import SamplingAndOcclusionExplain
 
 
 logger = logging.getLogger(__name__)
-VERSION = 'Current version of test: 1.000.000'
+VERSION = 'Current version of test: 1.000.003'
 
 
 def evaluate(args, processor, tokenizer, device, dl, phase=None, postfix=None):
-    output_mode = 'classification'
-
     # Prepare model
     model_dir = args.output_dir if phase is None else args.output_dir + '_' + my_utils.PHASE_NAMES[phase] + postfix
     logger.info('\n\n')
@@ -76,15 +74,14 @@ def validate(args, model, processor, tokenizer, dl, device, explainer=None):
     logger.info("  Batch size = %d", args.eval_batch_size)
 
     model.train(False)
-    eval_loss, eval_loss_reg = 0, 0
-    eval_reg_cnt, nb_eval_steps = 0, 0
+    eval_loss, nb_eval_steps = 0, 0
     preds, ys = [], []
 
     # for detailed prediction results
     input_seqs = []
     loss_fct = CrossEntropyLoss()
 
-    for step, batch in enumerate(tqdm(dl, desc='#Eval')):
+    for step, batch in enumerate(tqdm(dl, ncols=my_utils.MAX_LINE_WIDTH, desc='#Eval')):
         batch = tuple(t.to(device) for t in batch)
 
         with torch.no_grad():
@@ -95,16 +92,6 @@ def validate(args, model, processor, tokenizer, dl, device, explainer=None):
 
         eval_loss += tmp_eval_loss.mean().item()
 
-        with torch.no_grad():
-            if args.mode == 'mid':
-                reg_loss, reg_cnt = explainer.suppress_explanation_loss(*batch, do_backprop=False)
-            elif args.mode == 'soc':
-                reg_loss, reg_cnt = explainer.compute_explanation_loss(*batch, do_backprop=False)
-            else:
-                reg_loss, reg_cnt = 0, 0
-
-        eval_loss_reg += reg_loss
-        eval_reg_cnt += reg_cnt
         nb_eval_steps += 1
 
         if len(preds) == 0:
@@ -121,10 +108,9 @@ def validate(args, model, processor, tokenizer, dl, device, explainer=None):
             token_list = tokenizer.convert_ids_to_tokens(batch[0][b, :i].cpu().numpy().tolist())
             input_seqs.append(' '.join(token_list))
 
-    logger.info('\n')
+    # logger.info('\n')
 
     eval_loss = eval_loss / nb_eval_steps
-    eval_loss_reg = eval_loss_reg / (eval_reg_cnt + 1e-10)
 
     preds = preds[0]
     ys = ys[0]
@@ -136,7 +122,6 @@ def validate(args, model, processor, tokenizer, dl, device, explainer=None):
     global_step = -1
 
     result['eval_loss'] = eval_loss
-    result['eval_loss_reg'] = eval_loss_reg
     result['loss'] = loss
 
     split = 'test'
@@ -305,8 +290,7 @@ if __name__ == "__main__":
 
     _args = parser.parse_args(namespace=ns)
 
-    logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
-                        datefmt='%m/%d/%Y %H:%M:%S',
+    logging.basicConfig(format='%(asctime)s %(levelname)s - %(name)s -   %(message)s', datefmt='%m/%d %H:%M:%S',
                         level=logging.INFO if _args.local_rank in [-1, 0] else logging.WARN)
 
     logger.info(VERSION)

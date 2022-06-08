@@ -175,6 +175,7 @@ class MiD:
 
         with tqdm(total=len(self.phases)*self.args.max_iter, ncols=my_utils.MAX_LINE_WIDTH, desc='#Iter') as pbar:
             self.pbar = pbar
+            stored_iteration = -1
             while self.phase >= 0:
                 tr_loss = 0
                 # for step, batch in enumerate(tqdm(self.dl_train, desc='Batches')):
@@ -240,6 +241,7 @@ class MiD:
                             if val_f1 > val_best_f1:
                                 val_best_f1 = val_f1
                                 val_best = val_res
+                                stored_iteration = self.global_step
                                 if self.args.local_rank == -1 or torch.distributed.get_rank() == 0:
                                     my_utils.save_model(self.args, self.model, self.tokenizer,
                                                         phase=self.phase, postfix='_best')
@@ -263,7 +265,7 @@ class MiD:
                             # Exit phase when criterion satisfies
                             # TODO: 5. save status everytime a phase ends, for resuming training after disconnection
                             val_best_results.append(val_best)  # Only for recording
-                            val_phase_names.append(my_utils.PHASE_NAMES[self.phase])
+                            val_phase_names.append(my_utils.PHASE_NAMES[self.phase] + str(stored_iteration))
                             my_utils.save_model(self.args, self.model, self.tokenizer, phase=self.phase, postfix='_final')
                             self.phase = next(self.phases_iter, -1)
                             self.logger.info('-' * my_utils.MAX_LINE_WIDTH)
