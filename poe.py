@@ -20,7 +20,7 @@ from torch import nn
 # from loader import GabProcessor, WSProcessor, NytProcessor, convert_examples_to_features
 # from hiex import SamplingAndOcclusionExplain
 
-VERSION = 'Current version of MiD: 1.001.001'
+VERSION = 'Current version of MiD: 1.001.002'
 
 
 def unpack_features(fs, output_mode='classification'):
@@ -291,7 +291,7 @@ class MiD:
             for key in sorted(result.keys()):
                 self.logger.info("\t{} = {:.4f}".format(key, result[key]))
         self.logger.info('\n')
-        self.logger.info('--> Time cost: {}:{}:{}\n'.format(*time_cost))
+        self.logger.info('--> Time cost: {:>2}:{:>2}:{:>2}\n'.format(*time_cost))
 
         suppress_records = self.suppress_records[2:]
         records = [self.losses, self.reg_losses, suppress_records, self.attr_change_dict, self.manual_change_dict]

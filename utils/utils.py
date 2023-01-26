@@ -193,10 +193,12 @@ def save_model(args, model, tokenizer, phase=None, postfix=None):
         f.close()
 
 
-def seconds2hms(s):
+def seconds2hms(s, get_int=True):
     h = s//3600
     m = (s % 3600) // 60
     s = s % 60
+    if get_int:
+        return int(h), int(m), int(s)
     return h, m, s
 
 
