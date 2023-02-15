@@ -1,7 +1,8 @@
 # Power of Explanations - PoE
 Hi there, this repository contains the source code and necessary resources of the paper: \
-Power of Explanations: Towards automatic debiasing in hate speech detection \
+[Power of Explanations: Towards automatic debiasing in hate speech detection](https://ieeexplore.ieee.org/document/10032325) \
 *Yi Cai, Arthur Zimek, Gerhard Wunder, Eirini Ntoutsi*
+([Preprint](https://arxiv.org/abs/2209.09975) on arxiv)
 
 ## Dependencies
 Most of the experiments were carried out on Colab. 
