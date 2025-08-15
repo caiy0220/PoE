@@ -7,16 +7,16 @@ seed: 0
 #test: false  # consider to have separate setting file for testing
 
 # ------ MiD settings ------
-eta: 0.45           # threshold for FPP
+eta: 0.45           # filtering threshold for FPP
 tau: 0.65           # threshold for Attr
 get_attr: true      # for experiments
 reg_steps: 200      # period of checking FPP
 val_steps: 200      # period of checking best performing models
 reg_strength: 0.1   # lambda
-window_size: 10
-ratio_in_window: 0.65
+window_size: 5         # --> 5
+ratio_in_window: 0.65   # --> 0.6
 attr_on_training: 0
-count_thresh: 50
+count_thresh: 10    # Filtering out rare tokens, 10 used
 
 # ------ Hyper-parameters for training ------
 learning_rate: 2.0e-05
@@ -44,7 +44,7 @@ server_port: ''
 # ------ Data path, Loading & Storage ------
 data_dir: ./data/majority_gab_dataset_25k/  # data path
 stats_file: lazy_suppress_0.pkl   # details: losses, FA/FPP changes
-cache_dir: ''
+cache_dir: './models/cache'
 output_dir: runs/majority_seed_1  # model storage
 output_filename: temp.tmp   # explanation storage
 
@@ -53,7 +53,7 @@ suppress_weighted: false
 suppress_fading: 0.0
 suppress_higher_thresh: 2.0
 suppress_lower_thresh: 0.5
-suppress_increasing: 1.0
+suppress_increasing: 1.2
 #suppress_lazy: true
 
 # ------ To be removed ------
