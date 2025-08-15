@@ -126,6 +126,7 @@ if __name__ == '__main__':
         parser.add_argument('--'+k, type=type(getattr(ns, k)))
 
     _args = parser.parse_args(namespace=ns)
+    _args.stats_file = f'{_args.stats_file}_{_args.seed}.pkl'
 
     logging.basicConfig(format='%(asctime)s %(levelname)s - %(name)s -   %(message)s', datefmt='%m/%d %H:%M:%S',
                         level=logging.INFO if _args.local_rank in [-1, 0] else logging.WARN)

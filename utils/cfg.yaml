@@ -23,7 +23,7 @@ learning_rate: 2.0e-05
 # Less important
 train_batch_size: 32
 eval_batch_size: 32
-max_iter: 2000  # for each phase
+max_iter: 1000  # for each phase
 max_seq_length: 128
 early_stop: 5
 extra_iter: 0   # extra iter to go in stabilization
@@ -43,7 +43,7 @@ server_port: ''
 
 # ------ Data path, Loading & Storage ------
 data_dir: ./data/majority_gab_dataset_25k/  # data path
-stats_file: lazy_suppress_0.pkl   # details: losses, FA/FPP changes
+stats_file: ./outputs/lazy_suppress   # details: losses, FA/FPP changes
 cache_dir: './models/cache'
 output_dir: runs/majority_seed_1  # model storage
 output_filename: temp.tmp   # explanation storage
