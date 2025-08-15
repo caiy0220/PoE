@@ -51,8 +51,8 @@ def set_random_seed(args):
 
 
 def main(args):
-    if not os.path.exists(args.output_dir):
-        os.makedirs(args.output_dir)
+    os.makedirs(args.output_dir, exist_ok=True)
+    torch.hub.set_dir(os.path.join(os.getcwd(), 'models'))
     """ 
     ------------------------------------------------------------
     |                Prepare training setting                  |

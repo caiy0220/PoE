@@ -43,6 +43,7 @@ from hiex import SamplingAndOcclusionExplain
 
 logger = logging.getLogger(__name__)
 VERSION = 'Current version of test: 1.000.003'
+torch.hub.set_dir(os.path.join(os.getcwd(), 'models'))
 
 
 def evaluate(args, processor, tokenizer, device, dl, phase=None, postfix=None):

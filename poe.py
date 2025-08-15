@@ -13,14 +13,7 @@ from torch.utils.data import DataLoader, RandomSampler, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
 from torch import nn
 
-# from bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE, WEIGHTS_NAME, CONFIG_NAME, PHASE_NAMES
-# from bert.modeling import BertForSequenceClassification, BertConfig
-# from bert.tokenization import BertTokenizer
-# from bert.optimization import BertAdam, WarmupLinearSchedule
-# from loader import GabProcessor, WSProcessor, NytProcessor, convert_examples_to_features
-# from hiex import SamplingAndOcclusionExplain
-
-VERSION = 'Current version of MiD: 1.001.002'
+VERSION = 'Current version of MiD: 1.002.001'
 
 
 def unpack_features(fs, output_mode='classification'):
@@ -41,8 +34,6 @@ def get_dataloader(ds, args, train=True):
         sampler = RandomSampler(data)
     else:
         sampler = DistributedSampler(data)
-    # if not train:
-    #     sampler = SequentialSampler(data)
     size = args.train_batch_size if train else args.eval_batch_size
     dl = DataLoader(data, sampler=sampler, batch_size=size)
     return dl
@@ -178,7 +169,6 @@ class MiD:
             stored_iteration = -1
             while self.phase >= 0:
                 tr_loss = 0
-                # for step, batch in enumerate(tqdm(self.dl_train, desc='Batches')):
                 for step, batch in enumerate(self.dl_train):
                     if self.phase < 0:
                         break
@@ -321,13 +311,14 @@ class MiD:
         self.logger.info('\t\tNum examples = %d', len(eval_dl.dataset))
         wrong_li = [[] for _ in range(4)]
         right_li = [[] for _ in range(4)]
-        for i, batch in enumerate(tqdm(eval_dl, file=self.desc, desc='FPP')):
+        for i, batch in enumerate(eval_dl):
             idxs_wrong = find_incorrect(self.model, batch, self.device)
             idxs_all = list(range(len(batch[0])))
             for j in range(len(wrong_li)):
                 wrong_li[j] += [batch[j][idx] for idx in idxs_wrong]
                 right_li[j] += [batch[j][idx] for idx in idxs_all if idx not in idxs_wrong]
-            self.pbar.set_description(self.desc.read())
+            self.pbar.set_postfix_str(f'FPP: [{i}/{len(eval_dl)}]')
+            # self.pbar.set_description(self.desc.read())
 
         if self.args.mode == 'mid':
             # the most updated version
@@ -408,7 +399,7 @@ class MiD:
         loss_fct = nn.CrossEntropyLoss()
 
         # for step, batch in enumerate(dl):
-        for step, batch in enumerate(tqdm(dl, file=self.desc, desc='#Eval')):
+        for step, batch in enumerate(dl):
             batch = tuple(t.to(self.device) for t in batch)
 
             with torch.no_grad():
@@ -447,7 +438,8 @@ class MiD:
                 token_list = self.tokenizer.convert_ids_to_tokens(batch[0][b, :i].cpu().numpy().tolist())
                 input_seqs.append(' '.join(token_list))
 
-            self.pbar.set_description(self.desc.read())
+            self.pbar.set_postfix_str(f'Eval: [{i}/{len(dl)}]')
+
 
         eval_loss = eval_loss / nb_eval_steps
         eval_loss_reg = eval_loss_reg / (eval_reg_cnt + 1e-10)

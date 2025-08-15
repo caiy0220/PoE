@@ -1,4 +1,7 @@
 data
+models
+*.txt
+*.pkl
 env
 runs
 **__pycache__

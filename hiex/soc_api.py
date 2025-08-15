@@ -90,7 +90,7 @@ class SamplingAndOcclusionExplain:
                 if x.startswith('best'):
                     file_name = x
                     break
-        lm_model = torch.load(open(os.path.join(self.lm_dir, file_name), 'rb'))
+        lm_model = torch.load(open(os.path.join(self.lm_dir, file_name), 'rb'), weights_only=False)
         return lm_model
 
     def train_lm(self, processor):
